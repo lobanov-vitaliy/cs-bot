@@ -15,17 +15,20 @@ export function buildGatherMessage(
   text += `<b>${count}/${max}</b>\n\n`;
   text += `<b>Склад:</b>\n`;
 
-  if (count === 0) {
-    text += `<i>(порожньо)</i>`;
-  } else {
-    text += players
-      .map((p, i) => {
-        const name = p.username ? `@${p.username}` : p.firstName;
-        const icon = p.status === "confirmed" ? "✅" : "⏳";
-        return `${i + 1}/${max} ${name} ${icon}`;
-      })
-      .join("\n");
+  const lines: string[] = [];
+
+  for (let i = 0; i < max; i++) {
+    const player = players[i];
+    if (player) {
+      const name = player.username ? `@${player.username}` : player.firstName;
+      const icon = player.status === "confirmed" ? "✅" : "⏳";
+      lines.push(`${i + 1}/${max} ${name} ${icon}`);
+    } else {
+      lines.push(`${i + 1}/${max} <i>вільне місце</i>`);
+    }
   }
+
+  text += lines.join("\n");
 
   return text;
 }
