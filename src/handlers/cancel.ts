@@ -3,6 +3,7 @@ import {
   getActiveGathersForChat,
   cancelGather,
 } from "../services/gather.js";
+import { buildCancelledMessage } from "../utils/message-builder.js";
 
 const composer = new Composer();
 
@@ -20,7 +21,6 @@ composer.command("cancel", async (ctx) => {
     return ctx.reply("Немає активних зборів для скасування.");
   }
 
-  // Cancel the most recent active gather
   const latest = activeGathers[0];
   const result = cancelGather(latest.id, userId);
 
@@ -30,6 +30,16 @@ composer.command("cancel", async (ctx) => {
 
   if ("notOwner" in result) {
     return ctx.reply("Скасувати збір може тільки той, хто його створив.");
+  }
+
+  // Edit original gather message to show cancelled
+  if (latest.messageId) {
+    await ctx.api.editMessageText(
+      chatId,
+      parseInt(latest.messageId),
+      buildCancelledMessage(latest),
+      { parse_mode: "HTML" },
+    ).catch(() => {});
   }
 
   await ctx.reply(`Збір на ${latest.time} скасовано. ❌`);

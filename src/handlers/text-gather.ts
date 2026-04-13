@@ -7,7 +7,7 @@ import {
   updateGatherTime,
   cancelGather,
 } from "../services/gather.js";
-import { buildGatherMessage } from "../utils/message-builder.js";
+import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
 const composer = new Composer();
@@ -24,12 +24,55 @@ const CANCEL_KEYWORDS =
 const TIME_CHANGE_PATTERN =
   /(?:перенос|переносим|перенести|змінити час|поміняти час|новий час|время|час)\s*(?:на\s*)?(\d{1,2}:\d{2})/i;
 
-composer.on("message:text", async (ctx) => {
-  if (ctx.chat.type === "private") return;
+// Create gather by text (natural language)
+const CREATE_GATHER_PATTERN =
+  /(?:создай сбор|створи збір|збір на|сбор на|збери команду|собери команду|катка на|граємо о|играем в|грати о|играть в)\s*(\d{1,2}:\d{2})/i;
+
+// Standalone time with gather intent (e.g. "@bot 21:30" or "катка 21:00")
+const SHORT_GATHER_PATTERN =
+  /(?:катка|гра|game|cs|кс)\s+(\d{1,2}:\d{2})/i;
+
+composer.on("message:text", async (ctx, next) => {
+  if (ctx.chat.type === "private") return next();
 
   const text = ctx.message.text;
   const userId = String(ctx.from!.id);
   const chatId = String(ctx.chat.id);
+
+  // Strip bot mention for matching
+  const botUsername = ctx.me.username;
+  const cleanText = text.replace(new RegExp(`@${botUsername}`, "gi"), "").trim();
+
+  // --- 0. Create gather by natural language ---
+  const createMatch = cleanText.match(CREATE_GATHER_PATTERN) || cleanText.match(SHORT_GATHER_PATTERN);
+  if (createMatch) {
+    const existing = getLatestActiveGather(chatId);
+    if (existing) {
+      return ctx.reply(`Вже є активний збір на ${existing.time}. Спочатку скасуй його.`);
+    }
+
+    const time = createMatch[1];
+    const gather = createGather({
+      chatId,
+      createdBy: userId,
+      creatorUsername: ctx.from!.username ?? null,
+      creatorFirstName: ctx.from!.first_name,
+      time,
+    });
+
+    const players = getPlayersForGather(gather.id);
+    const msg = buildGatherMessage(gather, players);
+    const keyboard = buildGatherKeyboard(gather.id);
+
+    const sent = await ctx.reply(msg, {
+      reply_markup: keyboard,
+      parse_mode: "HTML",
+    });
+
+    updateGatherMessageId(gather.id, String(sent.message_id));
+    await ctx.deleteMessage().catch(() => {});
+    return;
+  }
 
   // --- 1. Try to parse lineup format ---
   const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -43,6 +86,11 @@ composer.on("message:text", async (ctx) => {
   }
 
   if (usernames.length >= 2) {
+    const existing = getLatestActiveGather(chatId);
+    if (existing) {
+      return ctx.reply(`Вже є активний збір на ${existing.time}. Спочатку скасуй його.`);
+    }
+
     // Found a lineup — extract time if present
     const timeMatch = text.match(TIME_PATTERN);
     // Find time that's NOT part of a lineup line (e.g. standalone "21:00")
@@ -64,6 +112,8 @@ composer.on("message:text", async (ctx) => {
     const gather = createGather({
       chatId,
       createdBy: userId,
+      creatorUsername: ctx.from!.username ?? null,
+      creatorFirstName: ctx.from!.first_name,
       time: time ?? "TBD",
       initialPlayers: usernames,
     });
@@ -78,11 +128,12 @@ composer.on("message:text", async (ctx) => {
     });
 
     updateGatherMessageId(gather.id, String(sent.message_id));
+    await ctx.deleteMessage().catch(() => {});
     return;
   }
 
   // --- 2. Try cancel by text ---
-  if (CANCEL_KEYWORDS.test(text.trim())) {
+  if (CANCEL_KEYWORDS.test(cleanText)) {
     const activeGather = getLatestActiveGather(chatId);
     if (!activeGather) {
       return ctx.reply("Немає активних зборів для скасування.");
@@ -95,11 +146,21 @@ composer.on("message:text", async (ctx) => {
       return ctx.reply("Скасувати збір може тільки той, хто його створив.");
     }
 
+    // Edit original gather message to show cancelled
+    if (activeGather.messageId) {
+      await ctx.api.editMessageText(
+        chatId,
+        parseInt(activeGather.messageId),
+        buildCancelledMessage(activeGather),
+        { parse_mode: "HTML" },
+      ).catch(() => {});
+    }
+
     return ctx.reply(`Збір на ${activeGather.time} скасовано. ❌`);
   }
 
   // --- 3. Try time change by text ---
-  const timeChangeMatch = text.match(TIME_CHANGE_PATTERN);
+  const timeChangeMatch = cleanText.match(TIME_CHANGE_PATTERN);
   if (timeChangeMatch) {
     const newTime = timeChangeMatch[1];
     const activeGather = getLatestActiveGather(chatId);
@@ -137,6 +198,9 @@ composer.on("message:text", async (ctx) => {
 
     return ctx.reply(`Час змінено на ${newTime} ⏰`);
   }
+
+  // No pattern matched — pass to next handler (AI)
+  return next();
 });
 
 export default composer;

@@ -1,11 +1,13 @@
 import { db } from "../db/index.js";
 import { gathers, gatherPlayers } from "../db/schema.js";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, or } from "drizzle-orm";
 import { env } from "../env.js";
 
 export function createGather(params: {
   chatId: string;
   createdBy: string;
+  creatorUsername: string | null;
+  creatorFirstName: string;
   time: string;
   initialPlayers?: string[];
 }) {
@@ -21,9 +23,41 @@ export function createGather(params: {
     .returning()
     .all();
 
+  // Add the creator as the first confirmed player
+  const creatorAlreadyInList = params.initialPlayers?.some(
+    (u) => u.replace(/^@/, "").toLowerCase() === params.creatorUsername?.toLowerCase(),
+  );
+
+  if (!creatorAlreadyInList) {
+    db.insert(gatherPlayers)
+      .values({
+        gatherId: gather.id,
+        userId: params.createdBy,
+        username: params.creatorUsername,
+        firstName: params.creatorFirstName,
+        status: "confirmed",
+        joinedAt: new Date().toISOString(),
+      })
+      .run();
+  }
+
   if (params.initialPlayers?.length) {
     for (const username of params.initialPlayers) {
       const clean = username.replace(/^@/, "");
+      // Skip if it's the creator (already added as confirmed)
+      if (clean.toLowerCase() === params.creatorUsername?.toLowerCase()) {
+        db.insert(gatherPlayers)
+          .values({
+            gatherId: gather.id,
+            userId: params.createdBy,
+            username: params.creatorUsername,
+            firstName: params.creatorFirstName,
+            status: "confirmed",
+            joinedAt: new Date().toISOString(),
+          })
+          .run();
+        continue;
+      }
       db.insert(gatherPlayers)
         .values({
           gatherId: gather.id,
@@ -217,7 +251,12 @@ export function getLatestActiveGather(chatId: string) {
   const results = db
     .select()
     .from(gathers)
-    .where(and(eq(gathers.chatId, chatId), eq(gathers.status, "open")))
+    .where(
+      and(
+        eq(gathers.chatId, chatId),
+        or(eq(gathers.status, "open"), eq(gathers.status, "full")),
+      ),
+    )
     .orderBy(desc(gathers.createdAt))
     .limit(1)
     .all();
@@ -237,7 +276,12 @@ export function getActiveGathersForChat(chatId: string) {
   return db
     .select()
     .from(gathers)
-    .where(and(eq(gathers.chatId, chatId), eq(gathers.status, "open")))
+    .where(
+      and(
+        eq(gathers.chatId, chatId),
+        or(eq(gathers.status, "open"), eq(gathers.status, "full")),
+      ),
+    )
     .orderBy(desc(gathers.createdAt))
     .all();
 }

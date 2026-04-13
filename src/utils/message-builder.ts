@@ -43,3 +43,7 @@ export function buildTeamReadyMessage(
 
   return `🔥 <b>Команду зібрано!</b>\n\n${mentions}\n\n⏰ Граємо о <b>${gather.time}</b> — всі на місці!`;
 }
+
+export function buildCancelledMessage(gather: Gather): string {
+  return `❌ <b>ЗБІР НА ${gather.time} СКАСОВАНО!</b>`;
+}

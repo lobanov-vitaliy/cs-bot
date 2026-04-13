@@ -1,6 +1,12 @@
 import OpenAI from "openai";
+import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions.js";
 import { env } from "../env.js";
-import { getActiveGathersWithPlayers } from "./gather.js";
+import {
+  getActiveGathersWithPlayers,
+  getLatestActiveGather,
+  cancelGather,
+  updateGatherTime,
+} from "./gather.js";
 import type { InferSelectModel } from "drizzle-orm";
 import type { gathers, gatherPlayers } from "../db/schema.js";
 
@@ -8,7 +14,44 @@ type GatherWithPlayers = InferSelectModel<typeof gathers> & {
   players: InferSelectModel<typeof gatherPlayers>[];
 };
 
+export type AiAction =
+  | { type: "cancelled"; gatherId: number; gather: InferSelectModel<typeof gathers> }
+  | { type: "time_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] };
+
+export interface AiResult {
+  text: string;
+  action?: AiAction;
+}
+
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+
+const tools: ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "cancel_gather",
+      description: "Скасувати активний збір команди. Використовуй коли користувач просить відмінити/скасувати/cancel збір.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_gather_time",
+      description: "Змінити час збору. Використовуй коли користувач просить перенести/змінити час/перенос/давай о/зміни на іншу годину.",
+      parameters: {
+        type: "object",
+        properties: {
+          new_time: {
+            type: "string",
+            description: "Новий час у форматі HH:MM, наприклад 22:30",
+          },
+        },
+        required: ["new_time"],
+      },
+    },
+  },
+];
 
 function serializeGatherContext(gathers: GatherWithPlayers[]): string {
   if (gathers.length === 0) return "Активних зборів немає.";
@@ -47,33 +90,120 @@ function buildSystemPrompt(gatherContext: string): string {
    2/5 @username ⏳
    і т.д.
    Додай час гри та короткий коментар з гумором.
+9. Якщо користувач просить перенести час або скасувати збір — ЗАВЖДИ використай відповідну функцію (cancel_gather або update_gather_time). НЕ відмовляй сам — функція сама перевірить чи має користувач право.
 
 Поточні збори:
 ${gatherContext}`;
 }
 
+function executeToolCall(
+  toolName: string,
+  args: Record<string, string>,
+  chatId: string,
+  userId: string,
+): { result: string; action?: AiAction } {
+  if (toolName === "cancel_gather") {
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    console.log(`[cancel] gather #${gather.id} createdBy=${gather.createdBy}, userId=${userId}`);
+
+    const res = cancelGather(gather.id, userId);
+    if (!res) return { result: "Збір не знайдено." };
+    if ("notOwner" in res) return { result: "Цей користувач НЕ є автором збору. Скасувати може тільки автор." };
+
+    return {
+      result: `Збір на ${gather.time} скасовано.`,
+      action: { type: "cancelled", gatherId: gather.id, gather },
+    };
+  }
+
+  if (toolName === "update_gather_time") {
+    const newTime = args.new_time;
+    if (!newTime || !/^\d{1,2}:\d{2}$/.test(newTime)) {
+      return { result: "Невірний формат часу." };
+    }
+
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    const res = updateGatherTime(gather.id, userId, newTime);
+    if (!res) return { result: "Збір не знайдено." };
+    if ("notOwner" in res) return { result: "Цей користувач НЕ є автором збору. Змінити час може тільки автор." };
+
+    return {
+      result: `Час збору змінено на ${newTime}.`,
+      action: { type: "time_changed", gatherId: gather.id, gather: res.gather, players: res.players },
+    };
+  }
+
+  return { result: "Невідома функція." };
+}
+
 export async function askAboutGather(
   userMessage: string,
   chatId: string,
-): Promise<string> {
+  userId: string,
+): Promise<AiResult> {
   const activeGathers = getActiveGathersWithPlayers(chatId);
   const context = serializeGatherContext(activeGathers);
   const systemPrompt = buildSystemPrompt(context);
 
+  const messages: ChatCompletionMessageParam[] = [
+    { role: "system", content: systemPrompt },
+    { role: "user", content: userMessage },
+  ];
+
   try {
     const response = await openai.chat.completions.create({
       model: env.OPENAI_MODEL,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userMessage },
-      ],
+      messages,
+      tools,
       temperature: 0.9,
       max_tokens: 200,
     });
 
-    return response.choices[0].message.content ?? "Шось пішло не так, братан.";
+    const message = response.choices[0].message;
+
+    // No tool calls — just return the text
+    if (!message.tool_calls?.length) {
+      return { text: message.content ?? "Шось пішло не так, братан." };
+    }
+
+    // Execute tool calls
+    let action: AiAction | undefined;
+    messages.push(message);
+
+    for (const toolCall of message.tool_calls) {
+      if (toolCall.type !== "function") continue;
+      const args = JSON.parse(toolCall.function.arguments || "{}");
+      const { result, action: toolAction } = executeToolCall(
+        toolCall.function.name,
+        args,
+        chatId,
+        userId,
+      );
+      if (toolAction) action = toolAction;
+
+      messages.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: result,
+      });
+    }
+
+    // Second call to get a natural response
+    const followUp = await openai.chat.completions.create({
+      model: env.OPENAI_MODEL,
+      messages,
+      temperature: 0.9,
+      max_tokens: 200,
+    });
+
+    const text = followUp.choices[0].message.content ?? "Готово, братан.";
+    return { text, action };
   } catch (err) {
     console.error("OpenAI error:", err);
-    return "OpenAI ліг, як і наш мід. Спробуй пізніше.";
+    return { text: "OpenAI ліг, як і наш мід. Спробуй пізніше." };
   }
 }

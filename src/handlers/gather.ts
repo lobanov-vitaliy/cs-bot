@@ -3,6 +3,7 @@ import {
   createGather,
   updateGatherMessageId,
   getPlayersForGather,
+  getLatestActiveGather,
 } from "../services/gather.js";
 import { buildGatherMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
@@ -28,6 +29,11 @@ composer.command("gather", async (ctx) => {
     return ctx.reply("Невірний формат часу. Використовуй ЧЧ:ММ, наприклад: 21:00");
   }
 
+  const existing = getLatestActiveGather(String(ctx.chat.id));
+  if (existing) {
+    return ctx.reply(`Вже є активний збір на ${existing.time}. Спочатку скасуй його.`);
+  }
+
   // Extract @usernames from remaining args
   const initialPlayers = parts
     .slice(1)
@@ -37,6 +43,8 @@ composer.command("gather", async (ctx) => {
   const gather = createGather({
     chatId: String(ctx.chat.id),
     createdBy: String(ctx.from!.id),
+    creatorUsername: ctx.from!.username ?? null,
+    creatorFirstName: ctx.from!.first_name,
     time,
     initialPlayers: initialPlayers.length > 0 ? initialPlayers : undefined,
   });
@@ -51,6 +59,9 @@ composer.command("gather", async (ctx) => {
   });
 
   updateGatherMessageId(gather.id, String(sent.message_id));
+
+  // Delete the original command message
+  await ctx.deleteMessage().catch(() => {});
 });
 
 export default composer;
