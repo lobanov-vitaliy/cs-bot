@@ -15,17 +15,18 @@ function serializeGatherContext(gathers: GatherWithPlayers[]): string {
 
   return gathers
     .map((g) => {
+      const max = g.maxPlayers;
       const playerList =
         g.players.length > 0
           ? g.players
               .map((p, i) => {
                 const name = p.username ? `@${p.username}` : p.firstName;
                 const status = p.status === "confirmed" ? "✅" : "⏳";
-                return `  ${i + 1}. ${name} ${status}`;
+                return `  ${i + 1}/${max} ${name} ${status}`;
               })
               .join("\n")
           : "  (нікого)";
-      return `Збір на ${g.time} (${g.players.length}/${g.maxPlayers}, статус: ${g.status}):\n${playerList}`;
+      return `Збір на ${g.time} (${g.players.length}/${max}, статус: ${g.status}):\n${playerList}`;
     })
     .join("\n\n");
 }
@@ -41,6 +42,11 @@ function buildSystemPrompt(gatherContext: string): string {
 5. На будь-які інші питання (погода, новини, математика, що завгодно) — відповідай у стилі "Я тобі не гугл, іди сам дізнайся" або подібне. Будь креативний у відмовах.
 6. Відповідай коротко, 1-2 речення максимум.
 7. Не будь ввічливим — будь як свій пацан у чаті.
+8. Коли питають про склад/хто грає — ЗАВЖДИ відповідай у форматі нумерованого списку:
+   1/5 @username ✅
+   2/5 @username ⏳
+   і т.д.
+   Додай час гри та короткий коментар з гумором.
 
 Поточні збори:
 ${gatherContext}`;

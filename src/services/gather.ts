@@ -198,6 +198,32 @@ export function cancelGather(gatherId: number, userId: string) {
   return { cancelled: true as const };
 }
 
+export function updateGatherTime(gatherId: number, userId: string, newTime: string) {
+  const gather = findGather(gatherId);
+  if (!gather) return null;
+  if (gather.createdBy !== userId) return { notOwner: true as const };
+
+  db.update(gathers)
+    .set({ time: newTime })
+    .where(eq(gathers.id, gatherId))
+    .run();
+
+  const updatedGather = findGather(gatherId)!;
+  const players = getPlayersForGather(gatherId);
+  return { gather: updatedGather, players };
+}
+
+export function getLatestActiveGather(chatId: string) {
+  const results = db
+    .select()
+    .from(gathers)
+    .where(and(eq(gathers.chatId, chatId), eq(gathers.status, "open")))
+    .orderBy(desc(gathers.createdAt))
+    .limit(1)
+    .all();
+  return results[0] ?? null;
+}
+
 export function getPlayersForGather(gatherId: number) {
   return db
     .select()
