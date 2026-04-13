@@ -1,6 +1,7 @@
 import { bot } from "./bot.js";
 import { db } from "./db/index.js";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { restoreActiveGatherTimers } from "./services/scheduler.js";
 import gatherHandler from "./handlers/gather.js";
 import callbackHandler from "./handlers/callback.js";
 import cancelHandler from "./handlers/cancel.js";
@@ -9,6 +10,9 @@ import aiHandler from "./handlers/ai.js";
 
 // Run migrations on startup
 migrate(db, { migrationsFolder: "./src/db/migrations" });
+
+// Restore timers for active gathers (reminders, expiry)
+restoreActiveGatherTimers();
 
 // Register handlers in order:
 // 1. /gather command

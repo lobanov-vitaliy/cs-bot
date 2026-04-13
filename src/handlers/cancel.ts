@@ -3,6 +3,7 @@ import {
   getActiveGathersForChat,
   cancelGather,
 } from "../services/gather.js";
+import { clearGatherTimers } from "../services/scheduler.js";
 import { buildCancelledMessage } from "../utils/message-builder.js";
 
 const composer = new Composer();
@@ -32,6 +33,9 @@ composer.command("cancel", async (ctx) => {
     return ctx.reply("Скасувати збір може тільки той, хто його створив.");
   }
 
+  // Clear scheduled timers
+  clearGatherTimers(latest.id);
+
   // Edit original gather message to show cancelled
   if (latest.messageId) {
     await ctx.api.editMessageText(
@@ -40,6 +44,9 @@ composer.command("cancel", async (ctx) => {
       buildCancelledMessage(latest),
       { parse_mode: "HTML" },
     ).catch(() => {});
+
+    // Unpin the gather message
+    await ctx.api.unpinChatMessage(chatId, parseInt(latest.messageId)).catch(() => {});
   }
 
   await ctx.reply(`Збір на ${latest.time} скасовано. ❌`);

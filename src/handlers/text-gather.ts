@@ -7,6 +7,7 @@ import {
   updateGatherTime,
   cancelGather,
 } from "../services/gather.js";
+import { isTimeInPast, scheduleGatherEvents, clearGatherTimers } from "../services/scheduler.js";
 import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
@@ -52,6 +53,11 @@ composer.on("message:text", async (ctx, next) => {
     }
 
     const time = createMatch[1];
+
+    if (isTimeInPast(time)) {
+      return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
+    }
+
     const gather = createGather({
       chatId,
       createdBy: userId,
@@ -70,6 +76,18 @@ composer.on("message:text", async (ctx, next) => {
     });
 
     updateGatherMessageId(gather.id, String(sent.message_id));
+
+    // Pin the gather message
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+    // Schedule reminder and expiry
+    scheduleGatherEvents({
+      id: gather.id,
+      chatId,
+      time: gather.time,
+      messageId: String(sent.message_id),
+    });
+
     await ctx.deleteMessage().catch(() => {});
     return;
   }
@@ -109,6 +127,10 @@ composer.on("message:text", async (ctx, next) => {
       time = timeMatch[1];
     }
 
+    if (time && time !== "TBD" && isTimeInPast(time)) {
+      return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
+    }
+
     const gather = createGather({
       chatId,
       createdBy: userId,
@@ -128,6 +150,20 @@ composer.on("message:text", async (ctx, next) => {
     });
 
     updateGatherMessageId(gather.id, String(sent.message_id));
+
+    // Pin the gather message
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+    // Schedule reminder and expiry (only if time is set)
+    if (time && time !== "TBD") {
+      scheduleGatherEvents({
+        id: gather.id,
+        chatId,
+        time: gather.time,
+        messageId: String(sent.message_id),
+      });
+    }
+
     await ctx.deleteMessage().catch(() => {});
     return;
   }
@@ -146,6 +182,9 @@ composer.on("message:text", async (ctx, next) => {
       return ctx.reply("Скасувати збір може тільки той, хто його створив.");
     }
 
+    // Clear scheduled timers
+    clearGatherTimers(activeGather.id);
+
     // Edit original gather message to show cancelled
     if (activeGather.messageId) {
       await ctx.api.editMessageText(
@@ -154,6 +193,9 @@ composer.on("message:text", async (ctx, next) => {
         buildCancelledMessage(activeGather),
         { parse_mode: "HTML" },
       ).catch(() => {});
+
+      // Unpin the gather message
+      await ctx.api.unpinChatMessage(chatId, parseInt(activeGather.messageId)).catch(() => {});
     }
 
     return ctx.reply(`Збір на ${activeGather.time} скасовано. ❌`);
@@ -163,6 +205,11 @@ composer.on("message:text", async (ctx, next) => {
   const timeChangeMatch = cleanText.match(TIME_CHANGE_PATTERN);
   if (timeChangeMatch) {
     const newTime = timeChangeMatch[1];
+
+    if (isTimeInPast(newTime)) {
+      return ctx.reply("Не можна перенести збір на час, що вже минув.");
+    }
+
     const activeGather = getLatestActiveGather(chatId);
     if (!activeGather) {
       return ctx.reply("Немає активних зборів для зміни часу.");
@@ -194,6 +241,16 @@ composer.on("message:text", async (ctx, next) => {
           console.error("Failed to edit gather message:", err);
         }
       }
+    }
+
+    // Reschedule timers for the new time
+    if (activeGather.messageId) {
+      scheduleGatherEvents({
+        id: activeGather.id,
+        chatId,
+        time: newTime,
+        messageId: activeGather.messageId,
+      });
     }
 
     return ctx.reply(`Час змінено на ${newTime} ⏰`);

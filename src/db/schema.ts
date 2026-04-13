@@ -6,7 +6,7 @@ export const gathers = sqliteTable("gathers", {
   messageId: text("message_id"),
   time: text("time").notNull(),
   maxPlayers: integer("max_players").notNull().default(5),
-  status: text("status", { enum: ["open", "full", "cancelled"] })
+  status: text("status", { enum: ["open", "full", "cancelled", "expired"] })
     .notNull()
     .default("open"),
   createdBy: text("created_by").notNull(),

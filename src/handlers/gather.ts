@@ -5,6 +5,7 @@ import {
   getPlayersForGather,
   getLatestActiveGather,
 } from "../services/gather.js";
+import { isTimeInPast, scheduleGatherEvents } from "../services/scheduler.js";
 import { buildGatherMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
@@ -27,6 +28,10 @@ composer.command("gather", async (ctx) => {
 
   if (!/^\d{1,2}:\d{2}$/.test(time)) {
     return ctx.reply("Невірний формат часу. Використовуй ЧЧ:ММ, наприклад: 21:00");
+  }
+
+  if (isTimeInPast(time)) {
+    return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
   }
 
   const existing = getLatestActiveGather(String(ctx.chat.id));
@@ -59,6 +64,17 @@ composer.command("gather", async (ctx) => {
   });
 
   updateGatherMessageId(gather.id, String(sent.message_id));
+
+  // Pin the gather message
+  await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+  // Schedule reminder and expiry
+  scheduleGatherEvents({
+    id: gather.id,
+    chatId: String(ctx.chat.id),
+    time: gather.time,
+    messageId: String(sent.message_id),
+  });
 
   // Delete the original command message
   await ctx.deleteMessage().catch(() => {});
