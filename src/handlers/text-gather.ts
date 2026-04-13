@@ -45,21 +45,27 @@ const ADD_PLAYER_PATTERN =
 const REMOVE_PLAYER_PATTERN =
   /^(?:-\s*@(\S+)|(?:прибери|убери|видали|remove)\s+@(\S+))$/i;
 
-// Self-join: "+", "+1", "я граю", "буду", "я в ділі", "я йду"
-const SELF_JOIN_PATTERN = /^(\+1?|я граю|буду|я в ділі|я йду)$/i;
+// Self-join: "+", "+1", "я +", "я граю", "буду", "я в ділі", "я йду"
+const SELF_JOIN_PATTERN = /^(\+1?|я\s*\+|я граю|буду|я в ділі|я йду)$/i;
 
-// Self-leave: "-", "-1", "пас", "не можу", "не буду", "не граю", "я пас", "мінус"
-const SELF_LEAVE_PATTERN = /^(-1?|пас|не можу|не буду|не граю|я пас|мінус)$/i;
+// Self-leave: "-", "-1", "я -", "пас", "не можу", "не буду", "не граю", "я пас", "мінус"
+const SELF_LEAVE_PATTERN = /^(-1?|я\s*-|пас|не можу|не буду|не граю|я пас|мінус)$/i;
 
 composer.on("message:text", async (ctx, next) => {
   if (ctx.chat.type === "private") return next();
 
   const text = ctx.message.text;
+  const botUsername = ctx.me.username;
+  const isMentioned = text.includes(`@${botUsername}`);
+  const isReplyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+
+  // Only react to messages where bot is mentioned or replied to
+  if (!isMentioned && !isReplyToBot) return next();
+
   const userId = String(ctx.from!.id);
   const chatId = String(ctx.chat.id);
 
   // Strip bot mention for matching
-  const botUsername = ctx.me.username;
   const cleanText = text.replace(new RegExp(`@${botUsername}`, "gi"), "").trim();
 
   // --- 0. Create gather by natural language ---
@@ -96,7 +102,7 @@ composer.on("message:text", async (ctx, next) => {
     updateGatherMessageId(gather.id, String(sent.message_id));
 
     // Pin the gather message
-    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch((err) => console.error("Pin failed:", err.message));
 
     // Schedule reminder and expiry
     scheduleGatherEvents({
@@ -170,7 +176,7 @@ composer.on("message:text", async (ctx, next) => {
     updateGatherMessageId(gather.id, String(sent.message_id));
 
     // Pin the gather message
-    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch((err) => console.error("Pin failed:", err.message));
 
     // Schedule reminder and expiry (only if time is set)
     if (time && time !== "TBD") {
@@ -213,7 +219,7 @@ composer.on("message:text", async (ctx, next) => {
       ).catch(() => {});
 
       // Unpin the gather message
-      await ctx.api.unpinChatMessage(chatId, parseInt(activeGather.messageId)).catch(() => {});
+      await ctx.api.unpinChatMessage(chatId, parseInt(activeGather.messageId)).catch((err) => console.error("Unpin failed:", err.message));
     }
 
     return ctx.reply(`Збір на ${activeGather.time} скасовано. ❌`);
@@ -312,6 +318,8 @@ composer.on("message:text", async (ctx, next) => {
           buildTeamReadyMessage(result.gather, result.players),
           { parse_mode: "HTML" },
         );
+      } else {
+        await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
       }
       return;
     }
@@ -331,6 +339,8 @@ composer.on("message:text", async (ctx, next) => {
         { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
       ).catch(() => {});
     }
+
+    await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     return;
   }
 
@@ -354,6 +364,8 @@ composer.on("message:text", async (ctx, next) => {
           { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
         ).catch(() => {});
       }
+
+      await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
       return;
     }
 
@@ -371,6 +383,8 @@ composer.on("message:text", async (ctx, next) => {
         { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
       ).catch(() => {});
     }
+
+    await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     return;
   }
 
@@ -408,6 +422,8 @@ composer.on("message:text", async (ctx, next) => {
         buildTeamReadyMessage(result.gather, result.players),
         { parse_mode: "HTML" },
       );
+    } else {
+      await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     }
     return;
   }
@@ -428,6 +444,8 @@ composer.on("message:text", async (ctx, next) => {
         { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
       ).catch(() => {});
     }
+
+    await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     return;
   }
 

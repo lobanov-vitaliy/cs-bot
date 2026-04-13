@@ -46,7 +46,7 @@ composer.command("cancel", async (ctx) => {
     ).catch(() => {});
 
     // Unpin the gather message
-    await ctx.api.unpinChatMessage(chatId, parseInt(latest.messageId)).catch(() => {});
+    await ctx.api.unpinChatMessage(chatId, parseInt(latest.messageId)).catch((err) => console.error("Unpin failed:", err.message));
   }
 
   await ctx.reply(`Збір на ${latest.time} скасовано. ❌`);

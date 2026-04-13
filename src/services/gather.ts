@@ -42,22 +42,23 @@ export function createGather(params: {
   }
 
   if (params.initialPlayers?.length) {
+    const added = new Set<string>();
+    // Mark creator as already added
+    if (params.creatorUsername) {
+      added.add(params.creatorUsername.toLowerCase());
+    }
+
     for (const username of params.initialPlayers) {
       const clean = username.replace(/^@/, "");
-      // Skip if it's the creator (already added as confirmed)
-      if (clean.toLowerCase() === params.creatorUsername?.toLowerCase()) {
-        db.insert(gatherPlayers)
-          .values({
-            gatherId: gather.id,
-            userId: params.createdBy,
-            username: params.creatorUsername,
-            firstName: params.creatorFirstName,
-            status: "confirmed",
-            joinedAt: new Date().toISOString(),
-          })
-          .run();
-        continue;
-      }
+      const key = clean.toLowerCase();
+
+      // Skip duplicates
+      if (added.has(key)) continue;
+      added.add(key);
+
+      // Skip if it's the creator (already added as confirmed above)
+      if (key === params.creatorUsername?.toLowerCase()) continue;
+
       db.insert(gatherPlayers)
         .values({
           gatherId: gather.id,
@@ -119,7 +120,7 @@ export function joinGather(
   user: { userId: string; username: string | null; firstName: string },
 ) {
   const gather = findGather(gatherId);
-  if (!gather || gather.status === "cancelled") {
+  if (!gather || gather.status === "cancelled" || gather.status === "expired") {
     return null;
   }
 

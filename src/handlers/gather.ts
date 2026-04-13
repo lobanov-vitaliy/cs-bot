@@ -66,7 +66,7 @@ composer.command("gather", async (ctx) => {
   updateGatherMessageId(gather.id, String(sent.message_id));
 
   // Pin the gather message
-  await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+  await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch((err) => console.error("Pin/unpin failed:", err.message));
 
   // Schedule reminder and expiry
   scheduleGatherEvents({
@@ -77,7 +77,7 @@ composer.command("gather", async (ctx) => {
   });
 
   // Delete the original command message
-  await ctx.deleteMessage().catch(() => {});
+  await ctx.deleteMessage().catch((err) => console.error("Pin/unpin failed:", err.message));
 });
 
 export default composer;

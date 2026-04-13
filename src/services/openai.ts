@@ -6,6 +6,8 @@ import {
   getLatestActiveGather,
   cancelGather,
   updateGatherTime,
+  joinGather,
+  leaveGather,
 } from "./gather.js";
 import type { InferSelectModel } from "drizzle-orm";
 import type { gathers, gatherPlayers } from "../db/schema.js";
@@ -16,7 +18,8 @@ type GatherWithPlayers = InferSelectModel<typeof gathers> & {
 
 export type AiAction =
   | { type: "cancelled"; gatherId: number; gather: InferSelectModel<typeof gathers> }
-  | { type: "time_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] };
+  | { type: "time_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] }
+  | { type: "roster_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[]; teamReady?: boolean };
 
 export interface AiResult {
   text: string;
@@ -30,7 +33,7 @@ const tools: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "cancel_gather",
-      description: "Скасувати активний збір команди. Використовуй коли користувач просить відмінити/скасувати/cancel збір.",
+      description: "Скасувати ВЕСЬ збір команди цілком. Використовуй ТІЛЬКИ коли користувач хоче скасувати/відмінити весь збір, а НЕ коли хоче вийти зі списку.",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -49,6 +52,22 @@ const tools: ChatCompletionTool[] = [
         },
         required: ["new_time"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "leave_gather",
+      description: "Видалити СЕБЕ зі списку збору. Використовуй коли користувач хоче вийти/прибери мене/я не граю/убери меня/мінус/я пас.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "join_gather",
+      description: "Додати СЕБЕ до збору. Використовуй коли користувач хоче приєднатися/я граю/буду/запиши мене/я в ділі/плюс.",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
 ];
@@ -82,7 +101,7 @@ function buildSystemPrompt(gatherContext: string): string {
 2. Відповідай з гумором та сарказмом, як справжній тіммейт.
 3. Якщо до тебе звертаються грубо — відповідай грубо у відповідь, не соромся.
 4. Ти відповідаєш ТІЛЬКИ на питання про збір команди CS2: хто грає, о котрій, скільки людей, статус збору.
-5. На будь-які інші питання (погода, новини, математика, що завгодно) — відповідай у стилі "Я тобі не гугл, іди сам дізнайся" або подібне. Будь креативний у відмовах.
+5. На будь-які інші питання (погода, новини, математика, що завгодно) — відповідай у стилі "Пан Віталій створив мене не для того, щоб я відповідав на твої тупі питання" або подібне. Будь креативний у варіаціях цієї фрази.
 6. Відповідай коротко, 1-2 речення максимум.
 7. Не будь ввічливим — будь як свій пацан у чаті.
 8. Коли питають про склад/хто грає — ЗАВЖДИ відповідай у форматі нумерованого списку:
@@ -101,6 +120,8 @@ function executeToolCall(
   args: Record<string, string>,
   chatId: string,
   userId: string,
+  userUsername: string | null,
+  userFirstName: string,
 ): { result: string; action?: AiAction } {
   if (toolName === "cancel_gather") {
     const gather = getLatestActiveGather(chatId);
@@ -137,6 +158,38 @@ function executeToolCall(
     };
   }
 
+  if (toolName === "leave_gather") {
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    const res = leaveGather(gather.id, userId, userUsername);
+    if (!res) return { result: "Збір не знайдено." };
+    if ("notFound" in res) return { result: "Цього користувача немає у списку збору." };
+
+    return {
+      result: `Користувача видалено зі списку збору.`,
+      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players },
+    };
+  }
+
+  if (toolName === "join_gather") {
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    const res = joinGather(gather.id, {
+      userId,
+      username: userUsername,
+      firstName: userFirstName,
+    });
+    if (!res) return { result: "Збір закрито." };
+    if (res.full) return { result: "Збір вже повний, місць немає." };
+
+    return {
+      result: `Користувача додано до збору.`,
+      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players, teamReady: res.teamReady },
+    };
+  }
+
   return { result: "Невідома функція." };
 }
 
@@ -144,6 +197,8 @@ export async function askAboutGather(
   userMessage: string,
   chatId: string,
   userId: string,
+  userUsername: string | null,
+  userFirstName: string,
 ): Promise<AiResult> {
   const activeGathers = getActiveGathersWithPlayers(chatId);
   const context = serializeGatherContext(activeGathers);
@@ -182,6 +237,8 @@ export async function askAboutGather(
         args,
         chatId,
         userId,
+        userUsername,
+        userFirstName,
       );
       if (toolAction) action = toolAction;
 

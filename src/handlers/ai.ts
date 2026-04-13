@@ -2,6 +2,7 @@ import { Composer, GrammyError } from "grammy";
 import { askAboutGather } from "../services/openai.js";
 import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
+import { clearGatherTimers, scheduleGatherEvents } from "../services/scheduler.js";
 
 const composer = new Composer();
 
@@ -20,10 +21,18 @@ composer.on("message:text", async (ctx) => {
   const chatId = String(ctx.chat.id);
   const userId = String(ctx.from!.id);
 
-  const { text: answer, action } = await askAboutGather(cleanedText, chatId, userId);
+  const { text: answer, action } = await askAboutGather(
+    cleanedText,
+    chatId,
+    userId,
+    ctx.from!.username ?? null,
+    ctx.from!.first_name,
+  );
 
   // Handle side effects from AI tool calls
   if (action?.type === "cancelled" && action.gather.messageId) {
+    clearGatherTimers(action.gatherId);
+
     try {
       await ctx.api.editMessageText(
         chatId,
@@ -36,9 +45,19 @@ composer.on("message:text", async (ctx) => {
         console.error("Failed to edit gather message:", err);
       }
     }
+
+    await ctx.api.unpinChatMessage(chatId, parseInt(action.gather.messageId)).catch((err) => console.error("Unpin failed:", err.message));
   }
 
   if (action?.type === "time_changed" && action.gather.messageId) {
+    // Reschedule timers for new time
+    scheduleGatherEvents({
+      id: action.gatherId,
+      chatId,
+      time: action.gather.time,
+      messageId: action.gather.messageId,
+    });
+
     try {
       await ctx.api.editMessageText(
         chatId,
@@ -53,6 +72,33 @@ composer.on("message:text", async (ctx) => {
       if (!(err instanceof GrammyError && err.description.includes("message is not modified"))) {
         console.error("Failed to edit gather message:", err);
       }
+    }
+  }
+
+  if (action?.type === "roster_changed" && action.gather.messageId) {
+    try {
+      await ctx.api.editMessageText(
+        chatId,
+        parseInt(action.gather.messageId),
+        buildGatherMessage(action.gather, action.players),
+        {
+          reply_markup: buildGatherKeyboard(action.gatherId),
+          parse_mode: "HTML",
+        },
+      );
+    } catch (err) {
+      if (!(err instanceof GrammyError && err.description.includes("message is not modified"))) {
+        console.error("Failed to edit gather message:", err);
+      }
+    }
+
+    if (action.teamReady) {
+      const { buildTeamReadyMessage } = await import("../utils/message-builder.js");
+      await ctx.api.sendMessage(
+        chatId,
+        buildTeamReadyMessage(action.gather, action.players),
+        { parse_mode: "HTML" },
+      );
     }
   }
 
