@@ -306,3 +306,89 @@ export function getActiveGathersWithPlayers(chatId: string) {
     players: getPlayersForGather(g.id),
   }));
 }
+
+export function addPlayerByCreator(
+  gatherId: number,
+  creatorUserId: string,
+  username: string,
+) {
+  const gather = findGather(gatherId);
+  if (!gather || gather.status === "cancelled" || gather.status === "expired") {
+    return null;
+  }
+  if (gather.createdBy !== creatorUserId) return { notOwner: true as const };
+
+  // Check if player already in gather
+  const existing = db
+    .select()
+    .from(gatherPlayers)
+    .where(
+      and(
+        eq(gatherPlayers.gatherId, gatherId),
+        eq(gatherPlayers.username, username),
+      ),
+    )
+    .all();
+
+  if (existing.length > 0) {
+    return { alreadyIn: true as const };
+  }
+
+  const currentCount = getPlayersForGather(gatherId).length;
+  if (currentCount >= gather.maxPlayers) {
+    return { gather, players: getPlayersForGather(gatherId), full: true as const };
+  }
+
+  db.insert(gatherPlayers)
+    .values({
+      gatherId,
+      userId: "",
+      username,
+      firstName: username,
+      status: "pending",
+      joinedAt: new Date().toISOString(),
+    })
+    .run();
+
+  const updatedGather = findGather(gatherId)!;
+  const players = getPlayersForGather(gatherId);
+  return { gather: updatedGather, players };
+}
+
+export function removePlayerByCreator(
+  gatherId: number,
+  creatorUserId: string,
+  username: string,
+) {
+  const gather = findGather(gatherId);
+  if (!gather) return null;
+  if (gather.createdBy !== creatorUserId) return { notOwner: true as const };
+
+  const matched = db
+    .select()
+    .from(gatherPlayers)
+    .where(
+      and(
+        eq(gatherPlayers.gatherId, gatherId),
+        eq(gatherPlayers.username, username),
+      ),
+    )
+    .all();
+
+  if (matched.length === 0) {
+    return { notFound: true as const };
+  }
+
+  db.delete(gatherPlayers).where(eq(gatherPlayers.id, matched[0].id)).run();
+
+  if (gather.status === "full") {
+    db.update(gathers)
+      .set({ status: "open" })
+      .where(eq(gathers.id, gatherId))
+      .run();
+  }
+
+  const updatedGather = findGather(gatherId)!;
+  const players = getPlayersForGather(gatherId);
+  return { gather: updatedGather, players };
+}

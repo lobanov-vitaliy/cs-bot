@@ -12,4 +12,5 @@ export const env = {
   OPENAI_MODEL: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   DATABASE_PATH: process.env.DATABASE_PATH ?? "./data/cs-bot.db",
   DEFAULT_MAX_PLAYERS: parseInt(process.env.DEFAULT_MAX_PLAYERS ?? "5", 10),
+  TIMEZONE: process.env.TIMEZONE ?? "Europe/Kyiv",
 };

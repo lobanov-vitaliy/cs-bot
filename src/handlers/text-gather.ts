@@ -6,8 +6,13 @@ import {
   getLatestActiveGather,
   updateGatherTime,
   cancelGather,
+  joinGather,
+  leaveGather,
+  addPlayerByCreator,
+  removePlayerByCreator,
 } from "../services/gather.js";
-import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
+import { isTimeInPast, scheduleGatherEvents, clearGatherTimers } from "../services/scheduler.js";
+import { buildGatherMessage, buildCancelledMessage, buildTeamReadyMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
 const composer = new Composer();
@@ -32,6 +37,20 @@ const CREATE_GATHER_PATTERN =
 const SHORT_GATHER_PATTERN =
   /(?:катка|гра|game|cs|кс)\s+(\d{1,2}:\d{2})/i;
 
+// Add player by @username: "+@user", "+ @user", "додай @user", "добавь @user"
+const ADD_PLAYER_PATTERN =
+  /^(?:\+\s*@(\S+)|(?:додай|добавь|add)\s+@(\S+))$/i;
+
+// Remove player by @username: "-@user", "- @user", "прибери @user", "убери @user", "видали @user"
+const REMOVE_PLAYER_PATTERN =
+  /^(?:-\s*@(\S+)|(?:прибери|убери|видали|remove)\s+@(\S+))$/i;
+
+// Self-join: "+", "+1", "я граю", "буду", "я в ділі", "я йду"
+const SELF_JOIN_PATTERN = /^(\+1?|я граю|буду|я в ділі|я йду)$/i;
+
+// Self-leave: "-", "-1", "пас", "не можу", "не буду", "не граю", "я пас", "мінус"
+const SELF_LEAVE_PATTERN = /^(-1?|пас|не можу|не буду|не граю|я пас|мінус)$/i;
+
 composer.on("message:text", async (ctx, next) => {
   if (ctx.chat.type === "private") return next();
 
@@ -52,6 +71,11 @@ composer.on("message:text", async (ctx, next) => {
     }
 
     const time = createMatch[1];
+
+    if (isTimeInPast(time)) {
+      return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
+    }
+
     const gather = createGather({
       chatId,
       createdBy: userId,
@@ -70,6 +94,18 @@ composer.on("message:text", async (ctx, next) => {
     });
 
     updateGatherMessageId(gather.id, String(sent.message_id));
+
+    // Pin the gather message
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+    // Schedule reminder and expiry
+    scheduleGatherEvents({
+      id: gather.id,
+      chatId,
+      time: gather.time,
+      messageId: String(sent.message_id),
+    });
+
     await ctx.deleteMessage().catch(() => {});
     return;
   }
@@ -109,6 +145,10 @@ composer.on("message:text", async (ctx, next) => {
       time = timeMatch[1];
     }
 
+    if (time && time !== "TBD" && isTimeInPast(time)) {
+      return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
+    }
+
     const gather = createGather({
       chatId,
       createdBy: userId,
@@ -128,6 +168,20 @@ composer.on("message:text", async (ctx, next) => {
     });
 
     updateGatherMessageId(gather.id, String(sent.message_id));
+
+    // Pin the gather message
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+    // Schedule reminder and expiry (only if time is set)
+    if (time && time !== "TBD") {
+      scheduleGatherEvents({
+        id: gather.id,
+        chatId,
+        time: gather.time,
+        messageId: String(sent.message_id),
+      });
+    }
+
     await ctx.deleteMessage().catch(() => {});
     return;
   }
@@ -146,6 +200,9 @@ composer.on("message:text", async (ctx, next) => {
       return ctx.reply("Скасувати збір може тільки той, хто його створив.");
     }
 
+    // Clear scheduled timers
+    clearGatherTimers(activeGather.id);
+
     // Edit original gather message to show cancelled
     if (activeGather.messageId) {
       await ctx.api.editMessageText(
@@ -154,6 +211,9 @@ composer.on("message:text", async (ctx, next) => {
         buildCancelledMessage(activeGather),
         { parse_mode: "HTML" },
       ).catch(() => {});
+
+      // Unpin the gather message
+      await ctx.api.unpinChatMessage(chatId, parseInt(activeGather.messageId)).catch(() => {});
     }
 
     return ctx.reply(`Збір на ${activeGather.time} скасовано. ❌`);
@@ -163,6 +223,11 @@ composer.on("message:text", async (ctx, next) => {
   const timeChangeMatch = cleanText.match(TIME_CHANGE_PATTERN);
   if (timeChangeMatch) {
     const newTime = timeChangeMatch[1];
+
+    if (isTimeInPast(newTime)) {
+      return ctx.reply("Не можна перенести збір на час, що вже минув.");
+    }
+
     const activeGather = getLatestActiveGather(chatId);
     if (!activeGather) {
       return ctx.reply("Немає активних зборів для зміни часу.");
@@ -196,7 +261,174 @@ composer.on("message:text", async (ctx, next) => {
       }
     }
 
+    // Reschedule timers for the new time
+    if (activeGather.messageId) {
+      scheduleGatherEvents({
+        id: activeGather.id,
+        chatId,
+        time: newTime,
+        messageId: activeGather.messageId,
+      });
+    }
+
     return ctx.reply(`Час змінено на ${newTime} ⏰`);
+  }
+
+  // --- 4. Add/remove player by @username ---
+  const addPlayerMatch = cleanText.match(ADD_PLAYER_PATTERN);
+  if (addPlayerMatch) {
+    const targetUsername = (addPlayerMatch[1] || addPlayerMatch[2]).replace(/^@/, "");
+    const activeGather = getLatestActiveGather(chatId);
+    if (!activeGather) return next();
+
+    // If adding self by own username
+    if (ctx.from!.username && targetUsername.toLowerCase() === ctx.from!.username.toLowerCase()) {
+      const result = joinGather(activeGather.id, {
+        userId,
+        username: ctx.from!.username ?? null,
+        firstName: ctx.from!.first_name,
+      });
+      if (!result) return;
+      if (result.full) return ctx.reply("Збір вже повний, місць немає!");
+
+      if (activeGather.messageId) {
+        try {
+          await ctx.api.editMessageText(
+            chatId,
+            parseInt(activeGather.messageId),
+            buildGatherMessage(result.gather, result.players),
+            { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+          );
+        } catch (err) {
+          if (!(err instanceof GrammyError && err.description.includes("message is not modified"))) {
+            console.error("Failed to edit gather message:", err);
+          }
+        }
+      }
+
+      if (result.teamReady) {
+        await ctx.api.sendMessage(
+          chatId,
+          buildTeamReadyMessage(result.gather, result.players),
+          { parse_mode: "HTML" },
+        );
+      }
+      return;
+    }
+
+    // Creator-only: add another player
+    const result = addPlayerByCreator(activeGather.id, userId, targetUsername);
+    if (!result) return;
+    if ("notOwner" in result) return ctx.reply("Додавати гравців може тільки той, хто створив збір.");
+    if ("alreadyIn" in result) return ctx.reply(`@${targetUsername} вже у списку.`);
+    if ("full" in result) return ctx.reply("Збір вже повний, місць немає!");
+
+    if (activeGather.messageId) {
+      await ctx.api.editMessageText(
+        chatId,
+        parseInt(activeGather.messageId),
+        buildGatherMessage(result.gather, result.players),
+        { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  const removePlayerMatch = cleanText.match(REMOVE_PLAYER_PATTERN);
+  if (removePlayerMatch) {
+    const targetUsername = (removePlayerMatch[1] || removePlayerMatch[2]).replace(/^@/, "");
+    const activeGather = getLatestActiveGather(chatId);
+    if (!activeGather) return next();
+
+    // If removing self by own username
+    if (ctx.from!.username && targetUsername.toLowerCase() === ctx.from!.username.toLowerCase()) {
+      const result = leaveGather(activeGather.id, userId, ctx.from!.username ?? null);
+      if (!result) return;
+      if ("notFound" in result) return ctx.reply("Тебе немає у списку.");
+
+      if (activeGather.messageId) {
+        await ctx.api.editMessageText(
+          chatId,
+          parseInt(activeGather.messageId),
+          buildGatherMessage(result.gather, result.players),
+          { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+        ).catch(() => {});
+      }
+      return;
+    }
+
+    // Creator-only: remove another player
+    const result = removePlayerByCreator(activeGather.id, userId, targetUsername);
+    if (!result) return;
+    if ("notOwner" in result) return ctx.reply("Видаляти гравців може тільки той, хто створив збір.");
+    if ("notFound" in result) return ctx.reply(`@${targetUsername} немає у списку.`);
+
+    if (activeGather.messageId) {
+      await ctx.api.editMessageText(
+        chatId,
+        parseInt(activeGather.messageId),
+        buildGatherMessage(result.gather, result.players),
+        { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  // --- 5. Self join/leave by short text ---
+  if (SELF_JOIN_PATTERN.test(cleanText)) {
+    const activeGather = getLatestActiveGather(chatId);
+    if (!activeGather) return next();
+
+    const result = joinGather(activeGather.id, {
+      userId,
+      username: ctx.from!.username ?? null,
+      firstName: ctx.from!.first_name,
+    });
+    if (!result) return;
+    if (result.full) return ctx.reply("Збір вже повний, місць немає!");
+
+    if (activeGather.messageId) {
+      try {
+        await ctx.api.editMessageText(
+          chatId,
+          parseInt(activeGather.messageId),
+          buildGatherMessage(result.gather, result.players),
+          { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+        );
+      } catch (err) {
+        if (!(err instanceof GrammyError && err.description.includes("message is not modified"))) {
+          console.error("Failed to edit gather message:", err);
+        }
+      }
+    }
+
+    if (result.teamReady) {
+      await ctx.api.sendMessage(
+        chatId,
+        buildTeamReadyMessage(result.gather, result.players),
+        { parse_mode: "HTML" },
+      );
+    }
+    return;
+  }
+
+  if (SELF_LEAVE_PATTERN.test(cleanText)) {
+    const activeGather = getLatestActiveGather(chatId);
+    if (!activeGather) return next();
+
+    const result = leaveGather(activeGather.id, userId, ctx.from!.username ?? null);
+    if (!result) return;
+    if ("notFound" in result) return;
+
+    if (activeGather.messageId) {
+      await ctx.api.editMessageText(
+        chatId,
+        parseInt(activeGather.messageId),
+        buildGatherMessage(result.gather, result.players),
+        { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
+      ).catch(() => {});
+    }
+    return;
   }
 
   // No pattern matched — pass to next handler (AI)

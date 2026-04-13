@@ -47,3 +47,32 @@ export function buildTeamReadyMessage(
 export function buildCancelledMessage(gather: Gather): string {
   return `❌ <b>ЗБІР НА ${gather.time} СКАСОВАНО!</b>`;
 }
+
+export function buildExpiredMessage(
+  gather: Gather,
+  players: GatherPlayer[],
+): string {
+  const count = players.length;
+  const max = gather.maxPlayers;
+
+  let text = `⌛ <b>Збір на ${gather.time} — час вийшов</b>\n\n`;
+  text += `<b>${count}/${max}</b>\n\n`;
+  text += `<b>Склад:</b>\n`;
+
+  const lines: string[] = [];
+
+  for (let i = 0; i < max; i++) {
+    const player = players[i];
+    if (player) {
+      const name = player.username ? `@${player.username}` : player.firstName;
+      const icon = player.status === "confirmed" ? "✅" : "⏳";
+      lines.push(`${i + 1}/${max} ${name} ${icon}`);
+    } else {
+      lines.push(`${i + 1}/${max} <i>вільне місце</i>`);
+    }
+  }
+
+  text += lines.join("\n");
+
+  return text;
+}
