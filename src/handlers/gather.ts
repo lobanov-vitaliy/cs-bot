@@ -6,7 +6,7 @@ import {
   getLatestActiveGather,
   getRecentGathersWithPlayers,
 } from "../services/gather.js";
-import { isTimeInPast, scheduleGatherEvents } from "../services/scheduler.js";
+import { isTimeInPast, scheduleGatherEvents, expireStaleGathers } from "../services/scheduler.js";
 import { buildGatherMessage, buildHistoryMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
@@ -34,6 +34,9 @@ composer.command("gather", async (ctx) => {
   if (isTimeInPast(time)) {
     return ctx.reply("Не можна створити збір на час, що вже минув. Вкажи майбутній час.");
   }
+
+  // Auto-expire stale gathers before checking
+  expireStaleGathers(String(ctx.chat.id));
 
   const existing = getLatestActiveGather(String(ctx.chat.id));
   if (existing) {

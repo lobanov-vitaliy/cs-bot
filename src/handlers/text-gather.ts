@@ -12,7 +12,7 @@ import {
   removePlayerByCreator,
   getRecentGathersWithPlayers,
 } from "../services/gather.js";
-import { isTimeInPast, scheduleGatherEvents, clearGatherTimers } from "../services/scheduler.js";
+import { isTimeInPast, scheduleGatherEvents, clearGatherTimers, expireStaleGathers } from "../services/scheduler.js";
 import { buildGatherMessage, buildCancelledMessage, buildTeamReadyMessage, buildHistoryMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 import { buildVacancyMessage } from "../utils/vacancy-notifier.js";
@@ -73,6 +73,7 @@ composer.on("message:text", async (ctx, next) => {
   // --- 0. Create gather by natural language ---
   const createMatch = cleanText.match(CREATE_GATHER_PATTERN) || cleanText.match(SHORT_GATHER_PATTERN);
   if (createMatch) {
+    expireStaleGathers(chatId);
     const existing = getLatestActiveGather(chatId);
     if (existing) {
       return ctx.reply(`Вже є активний збір на ${existing.time}. Спочатку скасуй його.`);
@@ -130,6 +131,7 @@ composer.on("message:text", async (ctx, next) => {
   }
 
   if (usernames.length >= 2) {
+    expireStaleGathers(chatId);
     const existing = getLatestActiveGather(chatId);
     if (existing) {
       return ctx.reply(`Вже є активний збір на ${existing.time}. Спочатку скасуй його.`);

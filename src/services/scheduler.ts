@@ -2,7 +2,7 @@ import { bot } from "../bot.js";
 import { db } from "../db/index.js";
 import { gathers } from "../db/schema.js";
 import { eq, or } from "drizzle-orm";
-import { getPlayersForGather } from "./gather.js";
+import { getPlayersForGather, getActiveGathersForChat } from "./gather.js";
 import { buildExpiredMessage } from "../utils/message-builder.js";
 import { env } from "../env.js";
 
@@ -135,6 +135,39 @@ export function clearGatherTimers(gatherId: number) {
     if (timers.reminder) clearTimeout(timers.reminder);
     if (timers.expiry) clearTimeout(timers.expiry);
     gatherTimers.delete(gatherId);
+  }
+}
+
+/**
+ * Expire any active gathers whose time has already passed.
+ * Call this before creating a new gather to prevent stale gathers from blocking.
+ */
+export function expireStaleGathers(chatId: string) {
+  const active = getActiveGathersForChat(chatId);
+  for (const gather of active) {
+    if (gather.time !== "TBD" && isTimeInPast(gather.time)) {
+      db.update(gathers)
+        .set({ status: "expired" })
+        .where(eq(gathers.id, gather.id))
+        .run();
+      clearGatherTimers(gather.id);
+
+      // Try to edit message and unpin (fire-and-forget)
+      if (gather.messageId) {
+        const players = getPlayersForGather(gather.id);
+        bot.api
+          .editMessageText(
+            chatId,
+            parseInt(gather.messageId),
+            buildExpiredMessage(gather, players),
+            { parse_mode: "HTML" },
+          )
+          .catch(() => {});
+        bot.api
+          .unpinChatMessage(chatId, parseInt(gather.messageId))
+          .catch(() => {});
+      }
+    }
   }
 }
 
