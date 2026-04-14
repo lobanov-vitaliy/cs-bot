@@ -3,6 +3,7 @@ import { askAboutGather } from "../services/openai.js";
 import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 import { clearGatherTimers, scheduleGatherEvents } from "../services/scheduler.js";
+import { buildVacancyMessage } from "../utils/vacancy-notifier.js";
 
 const composer = new Composer();
 
@@ -99,6 +100,24 @@ composer.on("message:text", async (ctx) => {
         buildTeamReadyMessage(action.gather, action.players),
         { parse_mode: "HTML" },
       );
+    }
+
+    if (action.promotedPlayer) {
+      const name = action.promotedPlayer.username
+        ? `@${action.promotedPlayer.username}`
+        : action.promotedPlayer.firstName;
+      await ctx.api.sendMessage(
+        chatId,
+        `🎉 ${name}, звільнилось місце! Тепер ти в основному складі на збір о <b>${action.gather.time}</b>!`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    if (action.needsTagging) {
+      const msg = buildVacancyMessage(action.gather, action.players, String(ctx.me.id));
+      if (msg) {
+        await ctx.api.sendMessage(chatId, msg, { parse_mode: "HTML" });
+      }
     }
   }
 

@@ -19,7 +19,7 @@ type GatherWithPlayers = InferSelectModel<typeof gathers> & {
 export type AiAction =
   | { type: "cancelled"; gatherId: number; gather: InferSelectModel<typeof gathers> }
   | { type: "time_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] }
-  | { type: "roster_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[]; teamReady?: boolean };
+  | { type: "roster_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[]; teamReady?: boolean; promotedPlayer?: InferSelectModel<typeof gatherPlayers> | null; needsTagging?: boolean };
 
 export interface AiResult {
   text: string;
@@ -168,7 +168,7 @@ function executeToolCall(
 
     return {
       result: `Користувача видалено зі списку збору.`,
-      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players },
+      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players, promotedPlayer: res.promotedPlayer, needsTagging: res.needsTagging },
     };
   }
 
@@ -182,10 +182,13 @@ function executeToolCall(
       firstName: userFirstName,
     });
     if (!res) return { result: "Збір закрито." };
-    if (res.full) return { result: "Збір вже повний, місць немає." };
+
+    const statusMsg = res.joinedAsReserve
+      ? "Користувача додано в заміну (основний склад повний)."
+      : "Користувача додано до збору.";
 
     return {
-      result: `Користувача додано до збору.`,
+      result: statusMsg,
       action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players, teamReady: res.teamReady },
     };
   }

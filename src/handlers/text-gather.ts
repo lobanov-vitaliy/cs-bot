@@ -14,6 +14,7 @@ import {
 import { isTimeInPast, scheduleGatherEvents, clearGatherTimers } from "../services/scheduler.js";
 import { buildGatherMessage, buildCancelledMessage, buildTeamReadyMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
+import { buildVacancyMessage } from "../utils/vacancy-notifier.js";
 
 const composer = new Composer();
 
@@ -295,7 +296,6 @@ composer.on("message:text", async (ctx, next) => {
         firstName: ctx.from!.first_name,
       });
       if (!result) return;
-      if (result.full) return ctx.reply("Збір вже повний, місць немає!");
 
       if (activeGather.messageId) {
         try {
@@ -318,6 +318,8 @@ composer.on("message:text", async (ctx, next) => {
           buildTeamReadyMessage(result.gather, result.players),
           { parse_mode: "HTML" },
         );
+      } else if (result.joinedAsReserve) {
+        await ctx.reply("Тебе додано в заміну. Якщо хтось відпаде — ти автоматично потрапиш у склад!");
       } else {
         await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
       }
@@ -329,7 +331,6 @@ composer.on("message:text", async (ctx, next) => {
     if (!result) return;
     if ("notOwner" in result) return ctx.reply("Додавати гравців може тільки той, хто створив збір.");
     if ("alreadyIn" in result) return ctx.reply(`@${targetUsername} вже у списку.`);
-    if ("full" in result) return ctx.reply("Збір вже повний, місць немає!");
 
     if (activeGather.messageId) {
       await ctx.api.editMessageText(
@@ -365,6 +366,24 @@ composer.on("message:text", async (ctx, next) => {
         ).catch(() => {});
       }
 
+      if (result.promotedPlayer) {
+        const name = result.promotedPlayer.username
+          ? `@${result.promotedPlayer.username}`
+          : result.promotedPlayer.firstName;
+        await ctx.api.sendMessage(
+          chatId,
+          `🎉 ${name}, звільнилось місце! Тепер ти в основному складі на збір о <b>${result.gather.time}</b>!`,
+          { parse_mode: "HTML" },
+        );
+      }
+
+      if (result.needsTagging) {
+        const msg = buildVacancyMessage(result.gather, result.players, String(ctx.me.id));
+        if (msg) {
+          await ctx.api.sendMessage(chatId, msg, { parse_mode: "HTML" });
+        }
+      }
+
       await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
       return;
     }
@@ -384,6 +403,24 @@ composer.on("message:text", async (ctx, next) => {
       ).catch(() => {});
     }
 
+    if (result.promotedPlayer) {
+      const name = result.promotedPlayer.username
+        ? `@${result.promotedPlayer.username}`
+        : result.promotedPlayer.firstName;
+      await ctx.api.sendMessage(
+        chatId,
+        `🎉 ${name}, звільнилось місце! Тепер ти в основному складі на збір о <b>${result.gather.time}</b>!`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    if (result.needsTagging) {
+      const msg = buildVacancyMessage(result.gather, result.players, String(ctx.me.id));
+      if (msg) {
+        await ctx.api.sendMessage(chatId, msg, { parse_mode: "HTML" });
+      }
+    }
+
     await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     return;
   }
@@ -399,7 +436,6 @@ composer.on("message:text", async (ctx, next) => {
       firstName: ctx.from!.first_name,
     });
     if (!result) return;
-    if (result.full) return ctx.reply("Збір вже повний, місць немає!");
 
     if (activeGather.messageId) {
       try {
@@ -422,6 +458,8 @@ composer.on("message:text", async (ctx, next) => {
         buildTeamReadyMessage(result.gather, result.players),
         { parse_mode: "HTML" },
       );
+    } else if (result.joinedAsReserve) {
+      await ctx.reply("Тебе додано в заміну. Якщо хтось відпаде — ти автоматично потрапиш у склад!");
     } else {
       await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     }
@@ -443,6 +481,24 @@ composer.on("message:text", async (ctx, next) => {
         buildGatherMessage(result.gather, result.players),
         { reply_markup: buildGatherKeyboard(activeGather.id), parse_mode: "HTML" },
       ).catch(() => {});
+    }
+
+    if (result.promotedPlayer) {
+      const name = result.promotedPlayer.username
+        ? `@${result.promotedPlayer.username}`
+        : result.promotedPlayer.firstName;
+      await ctx.api.sendMessage(
+        chatId,
+        `🎉 ${name}, звільнилось місце! Тепер ти в основному складі на збір о <b>${result.gather.time}</b>!`,
+        { parse_mode: "HTML" },
+      );
+    }
+
+    if (result.needsTagging) {
+      const msg = buildVacancyMessage(result.gather, result.players, String(ctx.me.id));
+      if (msg) {
+        await ctx.api.sendMessage(chatId, msg, { parse_mode: "HTML" });
+      }
     }
 
     await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });

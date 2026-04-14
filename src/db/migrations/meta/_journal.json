@@ -8,6 +8,13 @@
       "when": 1776103065923,
       "tag": "0000_gigantic_annihilus",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1776174639922,
+      "tag": "0001_opposite_paper_doll",
+      "breakpoints": true
     }
   ]
 }

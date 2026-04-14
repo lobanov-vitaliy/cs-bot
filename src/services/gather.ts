@@ -149,11 +149,7 @@ export function joinGather(
       .where(eq(gatherPlayers.id, existingByUsername.id))
       .run();
   } else {
-    const currentCount = getPlayersForGather(gatherId).length;
-    if (currentCount >= gather.maxPlayers) {
-      return { gather, players: getPlayersForGather(gatherId), full: true };
-    }
-
+    // Always allow joining — extra players become reserves
     db.insert(gatherPlayers)
       .values({
         gatherId,
@@ -169,22 +165,31 @@ export function joinGather(
   const players = getPlayersForGather(gatherId);
   const confirmedCount = players.filter((p) => p.status === "confirmed").length;
 
+  // Check if this player is in the reserve (index >= maxPlayers)
+  const playerIndex = players.findIndex(
+    (p) => p.userId === user.userId || (user.username && p.username === user.username),
+  );
+  const joinedAsReserve = playerIndex >= gather.maxPlayers;
+
   if (confirmedCount >= gather.maxPlayers && gather.status !== "full") {
     db.update(gathers)
       .set({ status: "full" })
       .where(eq(gathers.id, gatherId))
       .run();
     const updatedGather = findGather(gatherId)!;
-    return { gather: updatedGather, players, full: false, teamReady: true };
+    return { gather: updatedGather, players, full: false, teamReady: true, joinedAsReserve };
   }
 
   const updatedGather = findGather(gatherId)!;
-  return { gather: updatedGather, players, full: false };
+  return { gather: updatedGather, players, full: false, joinedAsReserve };
 }
 
 export function leaveGather(gatherId: number, userId: string, username: string | null) {
   const gather = findGather(gatherId);
   if (!gather) return null;
+
+  // Get players BEFORE deletion to determine positions
+  const playersBefore = getPlayersForGather(gatherId);
 
   let player = findPlayerByUserId(gatherId, userId);
 
@@ -203,21 +208,39 @@ export function leaveGather(gatherId: number, userId: string, username: string |
   }
 
   if (!player) {
-    return { gather, players: getPlayersForGather(gatherId), notFound: true as const };
+    return { gather, players: playersBefore, notFound: true as const };
   }
+
+  // Was leaving player in the main team?
+  const leavingIndex = playersBefore.findIndex((p) => p.id === player!.id);
+  const wasInMainTeam = leavingIndex < gather.maxPlayers;
 
   db.delete(gatherPlayers).where(eq(gatherPlayers.id, player.id)).run();
 
-  if (gather.status === "full") {
-    db.update(gathers)
-      .set({ status: "open" })
-      .where(eq(gathers.id, gatherId))
-      .run();
+  const playersAfter = getPlayersForGather(gatherId);
+
+  let promotedPlayer: (typeof playersAfter)[0] | null = null;
+  let needsTagging = false;
+
+  if (wasInMainTeam) {
+    if (playersBefore.length > gather.maxPlayers) {
+      // First reserve gets promoted automatically (they shift up in the list)
+      promotedPlayer = playersBefore[gather.maxPlayers];
+      // Main team stays full (or still has reserves)
+    } else {
+      // No reserves — main team now has an empty spot
+      if (gather.status === "full") {
+        db.update(gathers)
+          .set({ status: "open" })
+          .where(eq(gathers.id, gatherId))
+          .run();
+      }
+      needsTagging = true;
+    }
   }
 
   const updatedGather = findGather(gatherId)!;
-  const players = getPlayersForGather(gatherId);
-  return { gather: updatedGather, players };
+  return { gather: updatedGather, players: playersAfter, promotedPlayer, needsTagging };
 }
 
 export function cancelGather(gatherId: number, userId: string) {
@@ -335,11 +358,6 @@ export function addPlayerByCreator(
     return { alreadyIn: true as const };
   }
 
-  const currentCount = getPlayersForGather(gatherId).length;
-  if (currentCount >= gather.maxPlayers) {
-    return { gather, players: getPlayersForGather(gatherId), full: true as const };
-  }
-
   db.insert(gatherPlayers)
     .values({
       gatherId,
@@ -380,16 +398,32 @@ export function removePlayerByCreator(
     return { notFound: true as const };
   }
 
+  // Get players BEFORE deletion to determine positions
+  const playersBefore = getPlayersForGather(gatherId);
+  const leavingIndex = playersBefore.findIndex((p) => p.id === matched[0].id);
+  const wasInMainTeam = leavingIndex < gather.maxPlayers;
+
   db.delete(gatherPlayers).where(eq(gatherPlayers.id, matched[0].id)).run();
 
-  if (gather.status === "full") {
-    db.update(gathers)
-      .set({ status: "open" })
-      .where(eq(gathers.id, gatherId))
-      .run();
+  const playersAfter = getPlayersForGather(gatherId);
+
+  let promotedPlayer: (typeof playersAfter)[0] | null = null;
+  let needsTagging = false;
+
+  if (wasInMainTeam) {
+    if (playersBefore.length > gather.maxPlayers) {
+      promotedPlayer = playersBefore[gather.maxPlayers];
+    } else {
+      if (gather.status === "full") {
+        db.update(gathers)
+          .set({ status: "open" })
+          .where(eq(gathers.id, gatherId))
+          .run();
+      }
+      needsTagging = true;
+    }
   }
 
   const updatedGather = findGather(gatherId)!;
-  const players = getPlayersForGather(gatherId);
-  return { gather: updatedGather, players };
+  return { gather: updatedGather, players: playersAfter, promotedPlayer, needsTagging };
 }

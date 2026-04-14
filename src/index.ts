@@ -2,6 +2,7 @@ import { bot } from "./bot.js";
 import { db } from "./db/index.js";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { restoreActiveGatherTimers } from "./services/scheduler.js";
+import { trackChatMember } from "./services/chat-members.js";
 import gatherHandler from "./handlers/gather.js";
 import callbackHandler from "./handlers/callback.js";
 import cancelHandler from "./handlers/cancel.js";
@@ -13,6 +14,19 @@ migrate(db, { migrationsFolder: "./src/db/migrations" });
 
 // Restore timers for active gathers (reminders, expiry)
 restoreActiveGatherTimers();
+
+// Track chat members on every group message
+bot.on("message", (ctx, next) => {
+  if (ctx.chat.type !== "private" && ctx.from) {
+    trackChatMember(
+      String(ctx.chat.id),
+      String(ctx.from.id),
+      ctx.from.username ?? null,
+      ctx.from.first_name,
+    );
+  }
+  return next();
+});
 
 // Register handlers in order:
 // 1. /gather command
