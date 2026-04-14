@@ -71,14 +71,6 @@ const tools: ChatCompletionTool[] = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "get_history",
-      description: "Отримати історію останніх зборів. Використовуй коли питають про минулі збори, історію, попередні ігри, статистику, скільки було зборів, коли останній раз грали.",
-      parameters: { type: "object", properties: {}, required: [] },
-    },
-  },
 ];
 
 function serializeGatherContext(gathers: GatherWithPlayers[]): string {
@@ -102,7 +94,32 @@ function serializeGatherContext(gathers: GatherWithPlayers[]): string {
     .join("\n\n");
 }
 
-function buildSystemPrompt(gatherContext: string): string {
+function serializeHistoryContext(chatId: string): string {
+  const recent = getRecentGathersWithPlayers(chatId, 5);
+  if (recent.length === 0) return "Історія зборів порожня.";
+
+  const statusLabels: Record<string, string> = {
+    open: "відкритий",
+    full: "зібрано",
+    cancelled: "скасовано",
+    expired: "час вийшов",
+  };
+
+  return recent
+    .map((g, i) => {
+      const confirmed = g.players.filter((p) => p.status === "confirmed").length;
+      const playerNames = g.players
+        .slice(0, g.maxPlayers)
+        .map((p) => (p.username ? `@${p.username}` : p.firstName))
+        .join(", ");
+      const date = new Date(g.createdAt).toLocaleDateString("uk-UA");
+      const status = statusLabels[g.status] ?? g.status;
+      return `${i + 1}. ${g.time} — ${status} (${confirmed}/${g.maxPlayers}) ${date}${playerNames ? ` [${playerNames}]` : ""}`;
+    })
+    .join("\n");
+}
+
+function buildSystemPrompt(gatherContext: string, historyContext: string): string {
   return `Ти — бот-тіммейт у Telegram-чаті CS2 команди. Ти свій пацан, який завжди в курсі всіх зборів.
 
 ХАРАКТЕР:
@@ -129,13 +146,19 @@ function buildSystemPrompt(gatherContext: string): string {
   Додай час гри та короткий коментар.
 - Використовуй емодзі помірно, не перебарщуй.
 
+ВАЖЛИВО:
+- Ти НЕ маєш доступу до інтернету. НЕ шукай нічого в інтернеті, не посилайся на зовнішні джерела. Все що ти знаєш — це контекст зборів нижче і твої загальні знання про CS2.
+- Відповідай ТІЛЬКИ на основі наданого контексту зборів та своїх знань про CS2/геймінг.
+
 ІНСТРУМЕНТИ:
 - Якщо користувач хоче скасувати збір або змінити час — ЗАВЖДИ використай функцію. Не відмовляй сам.
-- Якщо питають про минулі збори/історію — використай get_history.
 - Якщо хоче записатись/вийти зі збору — використай join_gather/leave_gather.
 
 Поточні збори:
-${gatherContext}`;
+${gatherContext}
+
+Останні збори (історія):
+${historyContext}`;
 }
 
 function executeToolCall(
@@ -216,31 +239,6 @@ function executeToolCall(
     };
   }
 
-  if (toolName === "get_history") {
-    const recent = getRecentGathersWithPlayers(chatId, 5);
-    if (recent.length === 0) return { result: "Історія зборів порожня — ще жодного збору не було." };
-
-    const statusLabels: Record<string, string> = {
-      open: "відкритий",
-      full: "зібрано",
-      cancelled: "скасовано",
-      expired: "час вийшов",
-    };
-
-    const lines = recent.map((g, i) => {
-      const confirmed = g.players.filter((p) => p.status === "confirmed").length;
-      const playerNames = g.players
-        .slice(0, g.maxPlayers)
-        .map((p) => p.username ? `@${p.username}` : p.firstName)
-        .join(", ");
-      const date = new Date(g.createdAt).toLocaleDateString("uk-UA");
-      const status = statusLabels[g.status] ?? g.status;
-      return `${i + 1}. ${g.time} — ${status} (${confirmed}/${g.maxPlayers}) ${date}${playerNames ? `\n   Гравці: ${playerNames}` : ""}`;
-    });
-
-    return { result: `Останні збори:\n${lines.join("\n")}` };
-  }
-
   return { result: "Невідома функція." };
 }
 
@@ -253,7 +251,8 @@ export async function askAboutGather(
 ): Promise<AiResult> {
   const activeGathers = getActiveGathersWithPlayers(chatId);
   const context = serializeGatherContext(activeGathers);
-  const systemPrompt = buildSystemPrompt(context);
+  const history = serializeHistoryContext(chatId);
+  const systemPrompt = buildSystemPrompt(context, history);
 
   const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
