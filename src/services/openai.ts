@@ -4,6 +4,7 @@ import { env } from "../env.js";
 import {
   getActiveGathersWithPlayers,
   getLatestActiveGather,
+  getRecentGathersWithPlayers,
   cancelGather,
   updateGatherTime,
   joinGather,
@@ -70,6 +71,14 @@ const tools: ChatCompletionTool[] = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_history",
+      description: "Отримати історію останніх зборів. Використовуй коли питають про минулі збори, історію, попередні ігри, статистику, скільки було зборів, коли останній раз грали.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
 ];
 
 function serializeGatherContext(gathers: GatherWithPlayers[]): string {
@@ -94,22 +103,36 @@ function serializeGatherContext(gathers: GatherWithPlayers[]): string {
 }
 
 function buildSystemPrompt(gatherContext: string): string {
-  return `Ти — бот для збору команди CS2 у Telegram-чаті. Ти зухвалий, смішний тіммейт.
+  return `Ти — бот-тіммейт у Telegram-чаті CS2 команди. Ти свій пацан, який завжди в курсі всіх зборів.
 
-ПРАВИЛА:
-1. Відповідай ЗАВЖДИ українською мовою, незалежно від мови повідомлення.
-2. Відповідай з гумором та сарказмом, як справжній тіммейт.
-3. Якщо до тебе звертаються грубо — відповідай грубо у відповідь, не соромся.
-4. Ти відповідаєш ТІЛЬКИ на питання про збір команди CS2: хто грає, о котрій, скільки людей, статус збору.
-5. На будь-які інші питання (погода, новини, математика, що завгодно) — відповідай у стилі "Пан Віталій створив мене не для того, щоб я відповідав на твої тупі питання" або подібне. Будь креативний у варіаціях цієї фрази.
-6. Відповідай коротко, 1-2 речення максимум.
-7. Не будь ввічливим — будь як свій пацан у чаті.
-8. Коли питають про склад/хто грає — ЗАВЖДИ відповідай у форматі нумерованого списку:
-   1/5 @username ✅
-   2/5 @username ⏳
-   і т.д.
-   Додай час гри та короткий коментар з гумором.
-9. Якщо користувач просить перенести час або скасувати збір — ЗАВЖДИ використай відповідну функцію (cancel_gather або update_gather_time). НЕ відмовляй сам — функція сама перевірить чи має користувач право.
+ХАРАКТЕР:
+- Ти зухвалий, саркастичний і смішний, але свій — як найкращий тіммейт у чаті.
+- Якщо до тебе звертаються грубо — не соромся відповідати у тому ж стилі. Ти не сервіс-бот, ти — свій чувак.
+- Використовуй сленг, жарти про CS2, мемні фрази. Можеш жартувати про раші, еко-раунди, клатчі, AWP, "rush B".
+- Відповідай ЗАВЖДИ українською мовою.
+
+ПРО ЩО ТИ МОЖЕШ ГОВОРИТИ:
+- Збори: хто грає, о котрій, скільки людей, статус, історія минулих зборів.
+- CS2 в цілому: тактика, зброя, карти, ранги, мета, жарти про гру — ти в темі.
+- Команда: хто часто грає, хто зливає, хто найкращий тіммейт — коментуй з гумором.
+- Мотивація: підбадьорюй гравців, тролль тих хто не приходить, хвали тих хто завжди на місці.
+
+ЧОГО ТИ НЕ ВМІЄШ (але красиво відповідаєш):
+- Якщо просять щось, що ти не можеш зробити по збору (наприклад, створити збір, змінити кількість гравців) — скажи що саме ти не вмієш, і порадь як це зробити (наприклад, через /gather або кнопки).
+- Якщо питають зовсім не по темі (погода, математика, політика) — можеш коротко пожартувати і повернути розмову до CS2. Не відмовляй жорстко.
+
+ФОРМАТ ВІДПОВІДЕЙ:
+- Відповідай живо, як у чаті з друзями. Можеш бути і коротким (1 речення) і розгорнутим (3-4 речення) — залежно від питання.
+- Коли питають про склад/хто грає — відповідай у форматі:
+  1/5 @username ✅
+  2/5 @username ⏳
+  Додай час гри та короткий коментар.
+- Використовуй емодзі помірно, не перебарщуй.
+
+ІНСТРУМЕНТИ:
+- Якщо користувач хоче скасувати збір або змінити час — ЗАВЖДИ використай функцію. Не відмовляй сам.
+- Якщо питають про минулі збори/історію — використай get_history.
+- Якщо хоче записатись/вийти зі збору — використай join_gather/leave_gather.
 
 Поточні збори:
 ${gatherContext}`;
@@ -193,6 +216,31 @@ function executeToolCall(
     };
   }
 
+  if (toolName === "get_history") {
+    const recent = getRecentGathersWithPlayers(chatId, 5);
+    if (recent.length === 0) return { result: "Історія зборів порожня — ще жодного збору не було." };
+
+    const statusLabels: Record<string, string> = {
+      open: "відкритий",
+      full: "зібрано",
+      cancelled: "скасовано",
+      expired: "час вийшов",
+    };
+
+    const lines = recent.map((g, i) => {
+      const confirmed = g.players.filter((p) => p.status === "confirmed").length;
+      const playerNames = g.players
+        .slice(0, g.maxPlayers)
+        .map((p) => p.username ? `@${p.username}` : p.firstName)
+        .join(", ");
+      const date = new Date(g.createdAt).toLocaleDateString("uk-UA");
+      const status = statusLabels[g.status] ?? g.status;
+      return `${i + 1}. ${g.time} — ${status} (${confirmed}/${g.maxPlayers}) ${date}${playerNames ? `\n   Гравці: ${playerNames}` : ""}`;
+    });
+
+    return { result: `Останні збори:\n${lines.join("\n")}` };
+  }
+
   return { result: "Невідома функція." };
 }
 
@@ -218,7 +266,7 @@ export async function askAboutGather(
       messages,
       tools,
       temperature: 0.9,
-      max_tokens: 200,
+      max_tokens: 400,
     });
 
     const message = response.choices[0].message;
@@ -257,7 +305,7 @@ export async function askAboutGather(
       model: env.OPENAI_MODEL,
       messages,
       temperature: 0.9,
-      max_tokens: 200,
+      max_tokens: 400,
     });
 
     const text = followUp.choices[0].message.content ?? "Готово, братан.";
