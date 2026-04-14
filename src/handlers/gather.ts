@@ -4,9 +4,10 @@ import {
   updateGatherMessageId,
   getPlayersForGather,
   getLatestActiveGather,
+  getRecentGathersWithPlayers,
 } from "../services/gather.js";
 import { isTimeInPast, scheduleGatherEvents } from "../services/scheduler.js";
-import { buildGatherMessage } from "../utils/message-builder.js";
+import { buildGatherMessage, buildHistoryMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 
 const composer = new Composer();
@@ -78,6 +79,17 @@ composer.command("gather", async (ctx) => {
 
   // Delete the original command message
   await ctx.deleteMessage().catch((err) => console.error("Pin/unpin failed:", err.message));
+});
+
+composer.command("history", async (ctx) => {
+  if (ctx.chat.type === "private") {
+    return ctx.reply("Ця команда працює тільки в групових чатах.");
+  }
+
+  const chatId = String(ctx.chat.id);
+  const gathers = getRecentGathersWithPlayers(chatId);
+
+  return ctx.reply(buildHistoryMessage(gathers), { parse_mode: "HTML" });
 });
 
 export default composer;

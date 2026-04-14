@@ -427,3 +427,18 @@ export function removePlayerByCreator(
   const updatedGather = findGather(gatherId)!;
   return { gather: updatedGather, players: playersAfter, promotedPlayer, needsTagging };
 }
+
+export function getRecentGathersWithPlayers(chatId: string, limit = 5) {
+  const recentGathers = db
+    .select()
+    .from(gathers)
+    .where(eq(gathers.chatId, chatId))
+    .orderBy(desc(gathers.createdAt))
+    .limit(limit)
+    .all();
+
+  return recentGathers.map((g) => ({
+    ...g,
+    players: getPlayersForGather(g.id),
+  }));
+}

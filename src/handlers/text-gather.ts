@@ -10,9 +10,10 @@ import {
   leaveGather,
   addPlayerByCreator,
   removePlayerByCreator,
+  getRecentGathersWithPlayers,
 } from "../services/gather.js";
 import { isTimeInPast, scheduleGatherEvents, clearGatherTimers } from "../services/scheduler.js";
-import { buildGatherMessage, buildCancelledMessage, buildTeamReadyMessage } from "../utils/message-builder.js";
+import { buildGatherMessage, buildCancelledMessage, buildTeamReadyMessage, buildHistoryMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
 import { buildVacancyMessage } from "../utils/vacancy-notifier.js";
 
@@ -503,6 +504,13 @@ composer.on("message:text", async (ctx, next) => {
 
     await ctx.reply(buildGatherMessage(result.gather, result.players), { parse_mode: "HTML" });
     return;
+  }
+
+  // --- 6. History ---
+  const HISTORY_PATTERN = /^(історія|история|history|останні збори|последние сборы)$/i;
+  if (HISTORY_PATTERN.test(cleanText)) {
+    const gathers = getRecentGathersWithPlayers(chatId);
+    return ctx.reply(buildHistoryMessage(gathers), { parse_mode: "HTML" });
   }
 
   // No pattern matched — pass to next handler (AI)
