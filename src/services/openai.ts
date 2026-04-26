@@ -11,7 +11,10 @@ import {
   updateGatherTime,
   joinGather,
   leaveGather,
+  addPlayerByCreator,
+  removePlayerByCreator,
 } from "./gather.js";
+import { expireStaleGathers, isTimeInPast } from "./scheduler.js";
 import type { InferSelectModel } from "drizzle-orm";
 import type { gathers, gatherPlayers } from "../db/schema.js";
 
@@ -87,8 +90,42 @@ const tools: ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "join_gather",
-      description: "Додати СЕБЕ до збору. Використовуй коли користувач хоче приєднатися/я граю/буду/запиши мене/я в ділі/плюс.",
+      description: "Додати СЕБЕ до збору. Використовуй коли користувач хоче приєднатися/я граю/буду/запиши мене/я в ділі/плюс/+/+1.",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_player",
+      description: "Додати ІНШОГО гравця до збору за username. Тільки автор збору може це робити. Використовуй коли просять додати когось конкретного: додай @user, +@user, запиши @user.",
+      parameters: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            description: "Username гравця без @, наприклад: lobanov_vitaliy",
+          },
+        },
+        required: ["username"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_player",
+      description: "Видалити ІНШОГО гравця зі збору за username. Тільки автор збору може це робити. Використовуй коли просять прибрати/видалити когось: прибери @user, -@user, видали @user.",
+      parameters: {
+        type: "object",
+        properties: {
+          username: {
+            type: "string",
+            description: "Username гравця без @, наприклад: lobanov_vitaliy",
+          },
+        },
+        required: ["username"],
+      },
     },
   },
 ];
@@ -155,7 +192,7 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
 - Мотивація: підбадьорюй гравців, тролль тих хто не приходить, хвали тих хто завжди на місці.
 
 ЧОГО ТИ НЕ ВМІЄШ (але красиво відповідаєш):
-- Якщо просять щось, що ти не можеш зробити (наприклад, змінити кількість гравців, видалити когось зі списку) — скажи що саме ти не вмієш, і порадь як це зробити.
+- Якщо просять щось, що ти не можеш зробити (наприклад, змінити кількість гравців) — скажи що саме ти не вмієш.
 - Якщо питають зовсім не по темі (погода, математика, політика) — можеш коротко пожартувати і повернути розмову до CS2. Не відмовляй жорстко.
 
 ФОРМАТ ВІДПОВІДЕЙ:
@@ -170,10 +207,16 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
 - Ти НЕ маєш доступу до інтернету. НЕ шукай нічого в інтернеті, не посилайся на зовнішні джерела. Все що ти знаєш — це контекст зборів нижче і твої загальні знання про CS2.
 - Відповідай ТІЛЬКИ на основі наданого контексту зборів та своїх знань про CS2/геймінг.
 
-ІНСТРУМЕНТИ:
-- Якщо користувач хоче створити збір/гру/катку — ЗАВЖДИ використай create_gather. Не відправляй на /gather.
-- Якщо хоче скасувати збір або змінити час — ЗАВЖДИ використай відповідну функцію. Не відмовляй сам.
-- Якщо хоче записатись/вийти зі збору — використай join_gather/leave_gather.
+ІНСТРУМЕНТИ (використовуй ЗАВЖДИ, не пропонуй робити вручну):
+- create_gather — створити збір/гру/катку. Якщо просять пограти/зібратися — створюй.
+- cancel_gather — скасувати збір. Тільки автор може.
+- update_gather_time — змінити/перенести час. Тільки автор може.
+- join_gather — записати АВТОРА ПОВІДОМЛЕННЯ до збору. Коли каже +, буду, я граю, і т.д.
+- leave_gather — видалити АВТОРА ПОВІДОМЛЕННЯ зі збору. Коли каже -, пас, не можу, і т.д.
+- add_player — додати ІНШОГО гравця за @username. Тільки автор збору може.
+- remove_player — видалити ІНШОГО гравця за @username. Тільки автор збору може.
+
+ГОЛОВНЕ ПРАВИЛО: Якщо є відповідний інструмент — використай його. НІКОЛИ не кажи "використай команду /gather" чи щось подібне.
 
 Поточні збори:
 ${gatherContext}
@@ -195,6 +238,12 @@ function executeToolCall(
     if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
       return { result: "Невірний формат часу. Потрібен формат HH:MM, наприклад 21:00." };
     }
+
+    if (isTimeInPast(time)) {
+      return { result: "Цей час вже минув. Потрібен майбутній час." };
+    }
+
+    expireStaleGathers(chatId);
 
     const existing = getLatestActiveGather(chatId);
     if (existing) {
@@ -283,6 +332,43 @@ function executeToolCall(
     return {
       result: statusMsg,
       action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players, teamReady: res.teamReady },
+    };
+  }
+
+  if (toolName === "add_player") {
+    const username = (args.username ?? "").replace(/^@/, "");
+    if (!username) return { result: "Не вказано username гравця." };
+
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    const res = addPlayerByCreator(gather.id, userId, username);
+    if (!res) return { result: "Збір не знайдено." };
+    if ("notOwner" in res) return { result: "Додавати гравців може тільки автор збору." };
+    if ("alreadyIn" in res) return { result: `@${username} вже у списку збору.` };
+    if ("full" in res) return { result: "Збір повний, немає вільних місць." };
+
+    return {
+      result: `@${username} додано до збору.`,
+      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players },
+    };
+  }
+
+  if (toolName === "remove_player") {
+    const username = (args.username ?? "").replace(/^@/, "");
+    if (!username) return { result: "Не вказано username гравця." };
+
+    const gather = getLatestActiveGather(chatId);
+    if (!gather) return { result: "Немає активних зборів." };
+
+    const res = removePlayerByCreator(gather.id, userId, username);
+    if (!res) return { result: "Збір не знайдено." };
+    if ("notOwner" in res) return { result: "Видаляти гравців може тільки автор збору." };
+    if ("notFound" in res) return { result: `@${username} немає у списку збору.` };
+
+    return {
+      result: `@${username} видалено зі збору.`,
+      action: { type: "roster_changed", gatherId: gather.id, gather: res.gather, players: res.players, promotedPlayer: res.promotedPlayer, needsTagging: res.needsTagging },
     };
   }
 
