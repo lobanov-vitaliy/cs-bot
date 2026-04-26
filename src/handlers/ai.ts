@@ -1,8 +1,9 @@
 import { Composer, GrammyError } from "grammy";
 import { askAboutGather } from "../services/openai.js";
+import { updateGatherMessageId } from "../services/gather.js";
 import { buildGatherMessage, buildCancelledMessage } from "../utils/message-builder.js";
 import { buildGatherKeyboard } from "../utils/keyboard-builder.js";
-import { clearGatherTimers, scheduleGatherEvents } from "../services/scheduler.js";
+import { clearGatherTimers, scheduleGatherEvents, expireStaleGathers } from "../services/scheduler.js";
 import { buildVacancyMessage } from "../utils/vacancy-notifier.js";
 
 const composer = new Composer();
@@ -31,6 +32,30 @@ composer.on("message:text", async (ctx) => {
   );
 
   // Handle side effects from AI tool calls
+  if (action?.type === "created") {
+    // Auto-expire stale gathers first
+    expireStaleGathers(chatId);
+
+    const gatherMsg = buildGatherMessage(action.gather, action.players);
+    const keyboard = buildGatherKeyboard(action.gatherId);
+
+    const sent = await ctx.api.sendMessage(chatId, gatherMsg, {
+      reply_markup: keyboard,
+      parse_mode: "HTML",
+    });
+
+    updateGatherMessageId(action.gatherId, String(sent.message_id));
+
+    await ctx.api.pinChatMessage(ctx.chat.id, sent.message_id, { disable_notification: true }).catch(() => {});
+
+    scheduleGatherEvents({
+      id: action.gatherId,
+      chatId,
+      time: action.gather.time,
+      messageId: String(sent.message_id),
+    });
+  }
+
   if (action?.type === "cancelled" && action.gather.messageId) {
     clearGatherTimers(action.gatherId);
 

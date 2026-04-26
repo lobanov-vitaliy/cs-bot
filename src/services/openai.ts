@@ -5,6 +5,8 @@ import {
   getActiveGathersWithPlayers,
   getLatestActiveGather,
   getRecentGathersWithPlayers,
+  createGather,
+  getPlayersForGather,
   cancelGather,
   updateGatherTime,
   joinGather,
@@ -18,6 +20,7 @@ type GatherWithPlayers = InferSelectModel<typeof gathers> & {
 };
 
 export type AiAction =
+  | { type: "created"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] }
   | { type: "cancelled"; gatherId: number; gather: InferSelectModel<typeof gathers> }
   | { type: "time_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[] }
   | { type: "roster_changed"; gatherId: number; gather: InferSelectModel<typeof gathers>; players: InferSelectModel<typeof gatherPlayers>[]; teamReady?: boolean; promotedPlayer?: InferSelectModel<typeof gatherPlayers> | null; needsTagging?: boolean };
@@ -30,6 +33,23 @@ export interface AiResult {
 const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
 
 const tools: ChatCompletionTool[] = [
+  {
+    type: "function",
+    function: {
+      name: "create_gather",
+      description: "Створити новий збір команди. Використовуй коли користувач хоче створити збір/гру/катку/зібрати команду/пограти. Потрібен час у форматі HH:MM.",
+      parameters: {
+        type: "object",
+        properties: {
+          time: {
+            type: "string",
+            description: "Час збору у форматі HH:MM, наприклад 21:00",
+          },
+        },
+        required: ["time"],
+      },
+    },
+  },
   {
     type: "function",
     function: {
@@ -135,7 +155,7 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
 - Мотивація: підбадьорюй гравців, тролль тих хто не приходить, хвали тих хто завжди на місці.
 
 ЧОГО ТИ НЕ ВМІЄШ (але красиво відповідаєш):
-- Якщо просять щось, що ти не можеш зробити по збору (наприклад, створити збір, змінити кількість гравців) — скажи що саме ти не вмієш, і порадь як це зробити (наприклад, через /gather або кнопки).
+- Якщо просять щось, що ти не можеш зробити (наприклад, змінити кількість гравців, видалити когось зі списку) — скажи що саме ти не вмієш, і порадь як це зробити.
 - Якщо питають зовсім не по темі (погода, математика, політика) — можеш коротко пожартувати і повернути розмову до CS2. Не відмовляй жорстко.
 
 ФОРМАТ ВІДПОВІДЕЙ:
@@ -151,7 +171,8 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
 - Відповідай ТІЛЬКИ на основі наданого контексту зборів та своїх знань про CS2/геймінг.
 
 ІНСТРУМЕНТИ:
-- Якщо користувач хоче скасувати збір або змінити час — ЗАВЖДИ використай функцію. Не відмовляй сам.
+- Якщо користувач хоче створити збір/гру/катку — ЗАВЖДИ використай create_gather. Не відправляй на /gather.
+- Якщо хоче скасувати збір або змінити час — ЗАВЖДИ використай відповідну функцію. Не відмовляй сам.
 - Якщо хоче записатись/вийти зі збору — використай join_gather/leave_gather.
 
 Поточні збори:
@@ -169,6 +190,32 @@ function executeToolCall(
   userUsername: string | null,
   userFirstName: string,
 ): { result: string; action?: AiAction } {
+  if (toolName === "create_gather") {
+    const time = args.time;
+    if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
+      return { result: "Невірний формат часу. Потрібен формат HH:MM, наприклад 21:00." };
+    }
+
+    const existing = getLatestActiveGather(chatId);
+    if (existing) {
+      return { result: `Вже є активний збір на ${existing.time}. Спочатку треба скасувати його.` };
+    }
+
+    const gather = createGather({
+      chatId,
+      createdBy: userId,
+      creatorUsername: userUsername,
+      creatorFirstName: userFirstName,
+      time,
+    });
+
+    const players = getPlayersForGather(gather.id);
+    return {
+      result: `Збір на ${time} створено! ${userFirstName} вже в списку.`,
+      action: { type: "created", gatherId: gather.id, gather, players },
+    };
+  }
+
   if (toolName === "cancel_gather") {
     const gather = getLatestActiveGather(chatId);
     if (!gather) return { result: "Немає активних зборів." };
