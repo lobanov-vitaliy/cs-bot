@@ -1,4 +1,10 @@
 import OpenAI from "openai";
+import { observeOpenAI } from "@langfuse/openai";
+import {
+  startActiveObservation,
+  startObservation,
+  propagateAttributes,
+} from "@langfuse/tracing";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions.js";
 import { env } from "../env.js";
 import {
@@ -398,58 +404,111 @@ export async function askAboutGather(
     { role: "user", content: userMessage },
   ];
 
-  try {
-    const response = await openai.chat.completions.create({
-      model: env.OPENAI_MODEL,
-      messages,
-      tools,
-      temperature: 0.9,
-      max_tokens: 400,
-    });
+  // Trace-level attributes propagate to the root span and every child
+  // observation (generations, tool calls). Metadata values must be strings.
+  const traceMetadata: Record<string, string> = {
+    firstName: userFirstName,
+    model: env.OPENAI_MODEL,
+  };
+  if (userUsername) traceMetadata.username = userUsername;
 
-    const message = response.choices[0].message;
+  return propagateAttributes(
+    {
+      // chatId groups every turn of a chat into one Langfuse session.
+      sessionId: chatId,
+      userId,
+      tags: ["telegram", "cs2-gather"],
+      traceName: "gather-chat",
+      metadata: traceMetadata,
+    },
+    () =>
+      // Root span wraps both LLM calls and the tool execution so they appear
+      // as one trace. Its input/output become the trace input/output.
+      startActiveObservation("gather-chat", async (rootSpan) => {
+        // Only the user's message — not the system prompt or other args.
+        rootSpan.update({ input: userMessage });
 
-    // No tool calls — just return the text
-    if (!message.tool_calls?.length) {
-      return { text: message.content ?? "Шось пішло не так, братан." };
-    }
+        try {
+          // First call: the model decides whether to call a tool.
+          const response = await observeOpenAI(openai, {
+            generationName: "gather-intent",
+          }).chat.completions.create({
+            model: env.OPENAI_MODEL,
+            messages,
+            tools,
+            temperature: 0.9,
+            max_tokens: 400,
+          });
 
-    // Execute tool calls
-    let action: AiAction | undefined;
-    messages.push(message);
+          const message = response.choices[0].message;
 
-    for (const toolCall of message.tool_calls) {
-      if (toolCall.type !== "function") continue;
-      const args = JSON.parse(toolCall.function.arguments || "{}");
-      const { result, action: toolAction } = executeToolCall(
-        toolCall.function.name,
-        args,
-        chatId,
-        userId,
-        userUsername,
-        userFirstName,
-      );
-      if (toolAction) action = toolAction;
+          // No tool calls — just return the text
+          if (!message.tool_calls?.length) {
+            const text = message.content ?? "Шось пішло не так, братан.";
+            rootSpan.update({ output: text });
+            return { text };
+          }
 
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: result,
-      });
-    }
+          // Execute tool calls
+          let action: AiAction | undefined;
+          messages.push(message);
 
-    // Second call to get a natural response
-    const followUp = await openai.chat.completions.create({
-      model: env.OPENAI_MODEL,
-      messages,
-      temperature: 0.9,
-      max_tokens: 400,
-    });
+          for (const toolCall of message.tool_calls) {
+            if (toolCall.type !== "function") continue;
+            const args = JSON.parse(toolCall.function.arguments || "{}");
 
-    const text = followUp.choices[0].message.content ?? "Готово, братан.";
-    return { text, action };
-  } catch (err) {
-    console.error("OpenAI error:", err);
-    return { text: "OpenAI ліг, як і наш мід. Спробуй пізніше." };
-  }
+            // Each tool call is its own observation so the trace shows which
+            // tool ran, with what arguments, and what it returned.
+            const toolSpan = startObservation(
+              toolCall.function.name,
+              { input: args },
+              { asType: "tool" },
+            );
+            const { result, action: toolAction } = executeToolCall(
+              toolCall.function.name,
+              args,
+              chatId,
+              userId,
+              userUsername,
+              userFirstName,
+            );
+            toolSpan.update({ output: result }).end();
+
+            if (toolAction) action = toolAction;
+
+            messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              content: result,
+            });
+          }
+
+          // Second call to get a natural response
+          const followUp = await observeOpenAI(openai, {
+            generationName: "gather-reply",
+          }).chat.completions.create({
+            model: env.OPENAI_MODEL,
+            messages,
+            temperature: 0.9,
+            max_tokens: 400,
+          });
+
+          const text = followUp.choices[0].message.content ?? "Готово, братан.";
+          rootSpan.update({
+            output: text,
+            metadata: { action: action?.type ?? "none" },
+          });
+          return { text, action };
+        } catch (err) {
+          console.error("OpenAI error:", err);
+          const text = "OpenAI ліг, як і наш мід. Спробуй пізніше.";
+          rootSpan.update({
+            output: text,
+            level: "ERROR",
+            statusMessage: err instanceof Error ? err.message : String(err),
+          });
+          return { text };
+        }
+      }),
+  );
 }

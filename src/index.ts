@@ -1,3 +1,6 @@
+// Must be imported first so OpenTelemetry/Langfuse is initialized before any
+// span is created.
+import { shutdownTracing } from "./instrumentation.js";
 import { bot } from "./bot.js";
 import { db } from "./db/index.js";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
@@ -36,6 +39,15 @@ bot.use(gatherHandler);
 bot.use(cancelHandler);
 bot.use(callbackHandler);
 bot.use(aiHandler);
+
+// Graceful shutdown: stop polling and flush buffered traces to Langfuse.
+const shutdown = async () => {
+  await bot.stop();
+  await shutdownTracing();
+  process.exit(0);
+};
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
 
 // Start polling
 bot.start({
