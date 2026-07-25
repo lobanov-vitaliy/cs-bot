@@ -7,6 +7,7 @@ import {
 } from "@langfuse/tracing";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions.js";
 import { env } from "../env.js";
+import { describeOpenAiError } from "./openai-errors.js";
 import {
   getActiveGathersWithPlayers,
   getLatestActiveGather,
@@ -39,7 +40,13 @@ export interface AiResult {
   action?: AiAction;
 }
 
-const openai = new OpenAI({ apiKey: env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: env.OPENAI_API_KEY,
+  // Bound each request so a slow/hung OpenAI call can't freeze the bot for the
+  // SDK's 10-minute default. See OPENAI_TIMEOUT_MS / OPENAI_MAX_RETRIES in env.
+  timeout: env.OPENAI_TIMEOUT_MS,
+  maxRetries: env.OPENAI_MAX_RETRIES,
+});
 
 const tools: ChatCompletionTool[] = [
   {
@@ -500,14 +507,17 @@ export async function askAboutGather(
           });
           return { text, action };
         } catch (err) {
-          console.error("OpenAI error:", err);
-          const text = "OpenAI ліг, як і наш мід. Спробуй пізніше.";
-          rootSpan.update({
-            output: text,
-            level: "ERROR",
-            statusMessage: err instanceof Error ? err.message : String(err),
+          const { log, user } = describeOpenAiError(err, {
+            model: env.OPENAI_MODEL,
+            timeoutMs: env.OPENAI_TIMEOUT_MS,
           });
-          return { text };
+          console.error(`OpenAI error: ${log}`, err);
+          rootSpan.update({
+            output: user,
+            level: "ERROR",
+            statusMessage: log,
+          });
+          return { text: user };
         }
       }),
   );
