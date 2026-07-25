@@ -1,4 +1,3 @@
-import OpenAI from "openai";
 import { observeOpenAI } from "@langfuse/openai";
 import {
   startActiveObservation,
@@ -7,7 +6,10 @@ import {
 } from "@langfuse/tracing";
 import type { ChatCompletionMessageParam, ChatCompletionTool } from "openai/resources/chat/completions.js";
 import { env } from "../env.js";
+import { openai } from "./openai-client.js";
 import { describeOpenAiError } from "./openai-errors.js";
+import { searchWeb } from "./web-search.js";
+import { getRecentMessages } from "./chat-messages.js";
 import {
   getActiveGathersWithPlayers,
   getLatestActiveGather,
@@ -39,14 +41,6 @@ export interface AiResult {
   text: string;
   action?: AiAction;
 }
-
-const openai = new OpenAI({
-  apiKey: env.OPENAI_API_KEY,
-  // Bound each request so a slow/hung OpenAI call can't freeze the bot for the
-  // SDK's 10-minute default. See OPENAI_TIMEOUT_MS / OPENAI_MAX_RETRIES in env.
-  timeout: env.OPENAI_TIMEOUT_MS,
-  maxRetries: env.OPENAI_MAX_RETRIES,
-});
 
 const tools: ChatCompletionTool[] = [
   {
@@ -141,6 +135,44 @@ const tools: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "search_cs_news",
+      description:
+        "Пошук СВІЖОЇ інформації в інтернеті про Counter-Strike / CS2: новини, оновлення (патчі, зміни зброї/карт), результати матчів і турнірів, ростери команд, розклад, ціни на скіни, дати релізів. Використовуй ЗАВЖДИ, коли питання стосується актуальних подій чи даних, яких ти можеш не знати або які могли змінитися. НЕ вигадуй — краще знайди.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Конкретний пошуковий запит українською або англійською, наприклад: 'останній патч CS2 листопад 2026', 'результат NAVI vs Vitality', 'коли наступний Major CS2'.",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_recent_messages",
+      description:
+        "Отримати останні повідомлення з цього чату, щоб зрозуміти контекст розмови. Використовуй коли питання посилається на попереднє обговорення ('про що ми говорили', 'хто це запропонував', 'як домовились'), коли є займенники без явного об'єкта, або коли тобі бракує контексту, щоб відповісти влучно.",
+      parameters: {
+        type: "object",
+        properties: {
+          count: {
+            type: "integer",
+            description:
+              "Скільки останніх повідомлень підтягнути (за замовчуванням 20, максимум 50).",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 function serializeGatherContext(gathers: GatherWithPlayers[]): string {
@@ -216,9 +248,10 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
   Додай час гри та короткий коментар.
 - Використовуй емодзі помірно, не перебарщуй.
 
-ВАЖЛИВО:
-- Ти НЕ маєш доступу до інтернету. НЕ шукай нічого в інтернеті, не посилайся на зовнішні джерела. Все що ти знаєш — це контекст зборів нижче і твої загальні знання про CS2.
-- Відповідай ТІЛЬКИ на основі наданого контексту зборів та своїх знань про CS2/геймінг.
+СВІЖІ ДАНІ ТА КОНТЕКСТ:
+- Про АКТУАЛЬНІ події (новини CS2, патчі, результати матчів/турнірів, ростери, розклад, ціни на скіни, дати) — НЕ вигадуй з голови. Виклич search_cs_news і відповідай на основі знайденого. Твої "вбудовані" знання можуть бути застарілі.
+- Якщо не вистачає контексту розмови (питання посилається на попереднє обговорення, незрозумілі займенники) — виклич get_recent_messages, щоб підтягнути останні повідомлення чату.
+- Знайдене через search_cs_news переказуй СВОЇМИ словами у своєму стилі, коротко. Можеш згадати джерело/дату, але без полотен тексту.
 
 ІНСТРУМЕНТИ (використовуй ЗАВЖДИ, не пропонуй робити вручну):
 - create_gather — створити збір/гру/катку. Якщо просять пограти/зібратися — створюй.
@@ -228,6 +261,8 @@ function buildSystemPrompt(gatherContext: string, historyContext: string): strin
 - leave_gather — видалити АВТОРА ПОВІДОМЛЕННЯ зі збору. Коли каже -, пас, не можу, і т.д.
 - add_player — додати ІНШОГО гравця за @username.
 - remove_player — видалити ІНШОГО гравця за @username.
+- search_cs_news — пошук свіжих новин/даних про CS2 в інтернеті. Виклич для будь-чого актуального.
+- get_recent_messages — підтягнути останні повідомлення чату для контексту.
 
 КРИТИЧНО ВАЖЛИВО ПРО ПРАВА ДОСТУПУ:
 - Усі перевірки прав (хто автор, чи можна змінити час, чи можна скасувати) відбуваються ВСЕРЕДИНІ інструментів. Сам бекенд це перевіряє.
@@ -244,14 +279,14 @@ ${gatherContext}
 ${historyContext}`;
 }
 
-function executeToolCall(
+async function executeToolCall(
   toolName: string,
   args: Record<string, string>,
   chatId: string,
   userId: string,
   userUsername: string | null,
   userFirstName: string,
-): { result: string; action?: AiAction } {
+): Promise<{ result: string; action?: AiAction }> {
   if (toolName === "create_gather") {
     const time = args.time;
     if (!time || !/^\d{1,2}:\d{2}$/.test(time)) {
@@ -391,6 +426,32 @@ function executeToolCall(
     };
   }
 
+  if (toolName === "search_cs_news") {
+    const query = (args.query ?? "").toString();
+    const result = await searchWeb(query);
+    return { result };
+  }
+
+  if (toolName === "get_recent_messages") {
+    const raw = Number(args.count);
+    const count =
+      Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 50) : 20;
+
+    const messages = getRecentMessages(chatId, count);
+    if (messages.length === 0) {
+      return { result: "Історія повідомлень цього чату порожня." };
+    }
+
+    const formatted = messages
+      .map((m) => {
+        const name = m.username ? `@${m.username}` : m.firstName;
+        return `${name}: ${m.text}`;
+      })
+      .join("\n");
+
+    return { result: `Останні ${messages.length} повідомлень чату:\n${formatted}` };
+  }
+
   return { result: "Невідома функція." };
 }
 
@@ -471,7 +532,7 @@ export async function askAboutGather(
               { input: args },
               { asType: "tool" },
             );
-            const { result, action: toolAction } = executeToolCall(
+            const { result, action: toolAction } = await executeToolCall(
               toolCall.function.name,
               args,
               chatId,

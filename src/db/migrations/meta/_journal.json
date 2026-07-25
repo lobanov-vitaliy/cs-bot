@@ -15,6 +15,13 @@
       "when": 1776174639922,
       "tag": "0001_opposite_paper_doll",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1784999186523,
+      "tag": "0002_sturdy_senator_kelly",
+      "breakpoints": true
     }
   ]
 }

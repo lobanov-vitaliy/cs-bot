@@ -6,6 +6,7 @@ import { db } from "./db/index.js";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { restoreActiveGatherTimers } from "./services/scheduler.js";
 import { trackChatMember } from "./services/chat-members.js";
+import { trackMessage } from "./services/chat-messages.js";
 import gatherHandler from "./handlers/gather.js";
 import callbackHandler from "./handlers/callback.js";
 import cancelHandler from "./handlers/cancel.js";
@@ -17,15 +18,32 @@ migrate(db, { migrationsFolder: "./src/db/migrations" });
 // Restore timers for active gathers (reminders, expiry)
 restoreActiveGatherTimers();
 
-// Track chat members on every group message
+// Track chat members and recent messages on every group message.
+// NOTE: seeing ordinary messages requires Telegram group privacy mode to be
+// OFF for the bot (@BotFather → Bot Settings → Group Privacy → Turn off).
+// With privacy on, the bot only receives mentions/replies/commands, so the
+// recent-messages context will be sparse.
 bot.on("message", (ctx, next) => {
   if (ctx.chat.type !== "private" && ctx.from) {
+    const chatId = String(ctx.chat.id);
     trackChatMember(
-      String(ctx.chat.id),
+      chatId,
       String(ctx.from.id),
       ctx.from.username ?? null,
       ctx.from.first_name,
     );
+
+    const text = ctx.message.text ?? ctx.message.caption;
+    if (text && text.trim()) {
+      trackMessage({
+        chatId,
+        messageId: String(ctx.message.message_id),
+        userId: String(ctx.from.id),
+        username: ctx.from.username ?? null,
+        firstName: ctx.from.first_name,
+        text,
+      });
+    }
   }
   return next();
 });
