@@ -29,10 +29,6 @@ composer.command("cancel", async (ctx) => {
     return ctx.reply("Збір не знайдено.");
   }
 
-  if ("notOwner" in result) {
-    return ctx.reply("Скасувати збір може тільки той, хто його створив.");
-  }
-
   // Clear scheduled timers
   clearGatherTimers(latest.id);
 

@@ -246,7 +246,6 @@ export function leaveGather(gatherId: number, userId: string, username: string |
 export function cancelGather(gatherId: number, userId: string) {
   const gather = findGather(gatherId);
   if (!gather) return null;
-  if (gather.createdBy !== userId) return { notOwner: true as const };
 
   db.update(gathers)
     .set({ status: "cancelled" })
@@ -259,7 +258,6 @@ export function cancelGather(gatherId: number, userId: string) {
 export function updateGatherTime(gatherId: number, userId: string, newTime: string) {
   const gather = findGather(gatherId);
   if (!gather) return null;
-  if (gather.createdBy !== userId) return { notOwner: true as const };
 
   db.update(gathers)
     .set({ time: newTime })
@@ -340,7 +338,6 @@ export function addPlayerByCreator(
   if (!gather || gather.status === "cancelled" || gather.status === "expired") {
     return null;
   }
-  if (gather.createdBy !== creatorUserId) return { notOwner: true as const };
 
   // Check if player already in gather
   const existing = db
@@ -381,7 +378,6 @@ export function removePlayerByCreator(
 ) {
   const gather = findGather(gatherId);
   if (!gather) return null;
-  if (gather.createdBy !== creatorUserId) return { notOwner: true as const };
 
   const matched = db
     .select()
